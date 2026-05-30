@@ -1,0 +1,18 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/devices/index",
+    "pages/device/index",
+    "pages/example/index"
+  ],
+  "window": {
+    "backgroundColor": "#F5F8F6",
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#F5F8F6",
+    "navigationBarTitleText": "云汀智能家居",
+    "navigationBarTextStyle": "black"
+  },
+  "sitemapLocation": "sitemap.json",
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents"
+}

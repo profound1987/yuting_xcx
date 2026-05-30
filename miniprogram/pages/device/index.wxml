@@ -1,0 +1,83 @@
+<view class="device-page" wx:if="{{device}}">
+  <view class="device-hero">
+    <view class="device-head">
+      <view class="device-icon {{device.type}}"></view>
+      <view class="device-copy">
+        <view class="device-name">{{device.name}}</view>
+        <view class="device-meta">{{device.typeLabel}} · {{device.deviceNo}}</view>
+      </view>
+      <view class="status-pill {{manualRunning ? 'running' : ''}}">{{device.status}}</view>
+    </view>
+    <view class="hero-grid">
+      <view class="hero-item">
+        <view class="hero-label">当前模式</view>
+        <view class="hero-value">{{modeText}}</view>
+      </view>
+      <view class="hero-item">
+        <view class="hero-label">上次浇水</view>
+        <view class="hero-value small">{{device.lastWateringAt}}</view>
+      </view>
+    </view>
+  </view>
+
+  <block wx:if="{{device.type === 'watering'}}">
+    <view class="mode-tabs">
+      <view wx:for="{{modeTabs}}" wx:key="value" data-mode="{{item.value}}" class="mode-tab {{device.config.mode === item.value ? 'active' : ''}}" bindtap="selectMode">{{item.label}}</view>
+    </view>
+
+    <view class="config-panel" wx:if="{{device.config.mode === 'demand'}}">
+      <view class="section-title">按需浇水</view>
+      <view class="fill-sentence">
+        土壤湿度传感器每
+        <input class="inline-input" type="number" value="{{device.config.demand.intervalHours}}" data-section="demand" data-field="intervalHours" bindinput="onNumberInput" />
+        小时检测一次，当湿度小于
+        <input class="inline-input" type="number" value="{{device.config.demand.threshold}}" data-section="demand" data-field="threshold" bindinput="onNumberInput" />
+        % 时，开始浇水，每次浇水
+        <input class="inline-input" type="number" value="{{device.config.demand.durationSeconds}}" data-section="demand" data-field="durationSeconds" bindinput="onNumberInput" />
+        秒钟。
+      </view>
+    </view>
+
+    <view class="config-panel" wx:if="{{device.config.mode === 'schedule'}}">
+      <view class="section-title">定期浇水</view>
+      <view class="fill-sentence">
+        每天浇水
+        <input class="inline-input" type="number" value="{{device.config.schedule.timesPerDay}}" data-section="schedule" data-field="timesPerDay" bindinput="onNumberInput" />
+        次，每次浇水
+        <input class="inline-input" type="number" value="{{device.config.schedule.durationSeconds}}" data-section="schedule" data-field="durationSeconds" bindinput="onNumberInput" />
+        秒钟。
+      </view>
+    </view>
+
+    <view class="config-panel" wx:if="{{device.config.mode === 'manual'}}">
+      <view class="section-title">手动浇水</view>
+      <view class="fill-sentence compact">
+        浇水
+        <input class="inline-input" type="number" value="{{device.config.manual.durationSeconds}}" data-section="manual" data-field="durationSeconds" bindinput="onNumberInput" />
+        秒钟。
+      </view>
+      <view class="run-box" wx:if="{{manualRunning}}">
+        <view class="run-label">剩余 {{manualLeft}} 秒</view>
+        <progress percent="{{(device.config.manual.durationSeconds - manualLeft) * 100 / device.config.manual.durationSeconds}}" activeColor="#1f8f68" backgroundColor="#dce8e2" stroke-width="6" />
+      </view>
+      <view class="manual-actions">
+        <button class="primary-button" wx:if="{{!manualRunning}}" bindtap="startManualWatering">开始浇水</button>
+        <button class="danger-button" wx:if="{{manualRunning}}" bindtap="stopManualWatering">停止浇水</button>
+      </view>
+    </view>
+
+    <button class="save-button" bindtap="saveConfig">保存设置</button>
+  </block>
+
+  <view class="config-panel" wx:else>
+    <view class="section-title">设备基础信息</view>
+    <view class="info-row">
+      <view class="info-label">设备类型</view>
+      <view class="info-value">{{device.typeLabel}}</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">设备号</view>
+      <view class="info-value">{{device.deviceNo}}</view>
+    </view>
+  </view>
+</view>

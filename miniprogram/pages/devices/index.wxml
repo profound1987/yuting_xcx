@@ -1,0 +1,68 @@
+<view class="devices-page">
+  <view class="topbar">
+    <view>
+      <view class="page-title">设备管理</view>
+      <view class="page-subtitle">{{phone}}</view>
+    </view>
+    <button class="ghost-button" bindtap="logout">退出</button>
+  </view>
+
+  <view class="summary-row">
+    <view class="summary-item">
+      <view class="summary-value">{{deviceCount}}</view>
+      <view class="summary-label">已绑定</view>
+    </view>
+    <view class="summary-item accent">
+      <view class="summary-value">{{wateringCount}}</view>
+      <view class="summary-label">浇水系统</view>
+    </view>
+  </view>
+
+  <view class="bind-panel">
+    <view class="section-title">绑定设备</view>
+    <view class="form-row">
+      <view class="form-label">设备号</view>
+      <input class="form-input" placeholder="例如 YT-WATER-001" value="{{deviceNo}}" bindinput="onDeviceNoInput" />
+    </view>
+    <view class="form-row">
+      <view class="form-label">设备名称</view>
+      <input class="form-input" placeholder="阳台自动浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
+    </view>
+    <picker mode="selector" range="{{deviceTypes}}" range-key="label" value="{{deviceTypeIndex}}" bindchange="onTypeChange">
+      <view class="form-row picker-row">
+        <view class="form-label">设备类型</view>
+        <view class="picker-value">{{deviceTypes[deviceTypeIndex].label}}</view>
+      </view>
+    </picker>
+    <button class="primary-button" bindtap="bindDevice">绑定设备</button>
+  </view>
+
+  <view class="section-header">
+    <view class="section-title">我的设备</view>
+  </view>
+  <scroll-view class="filter-scroll" scroll-x="true" enhanced="true" show-scrollbar="false">
+    <view class="filter-track">
+      <view wx:for="{{filters}}" wx:key="value" data-value="{{item.value}}" class="filter-chip {{activeFilter === item.value ? 'active' : ''}}" bindtap="onFilterTap">{{item.label}}</view>
+    </view>
+  </scroll-view>
+
+  <view wx:if="{{visibleDevices.length === 0}}" class="empty-state">
+    <view class="empty-title">暂无设备</view>
+    <view class="empty-text">绑定后会显示在这里</view>
+  </view>
+
+  <view wx:for="{{visibleDevices}}" wx:key="id" class="device-card">
+    <view class="device-main" data-id="{{item.id}}" bindtap="openDevice">
+      <view class="device-icon {{item.type}}"></view>
+      <view class="device-copy">
+        <view class="device-name">{{item.name}}</view>
+        <view class="device-meta">{{item.typeLabel}} · {{item.deviceNo}}</view>
+      </view>
+      <view class="status-pill">{{item.status}}</view>
+    </view>
+    <view class="device-actions">
+      <button class="text-button" data-id="{{item.id}}" bindtap="openDevice">管理</button>
+      <button class="text-button danger" data-id="{{item.id}}" bindtap="deleteDevice">解绑</button>
+    </view>
+  </view>
+</view>

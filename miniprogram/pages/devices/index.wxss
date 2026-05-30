@@ -1,0 +1,290 @@
+page {
+  min-height: 100%;
+  background: #f5f8f6;
+  color: #18231f;
+  font-family: PingFang SC, Helvetica Neue, Arial, sans-serif;
+}
+
+.devices-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 28rpx 28rpx 56rpx;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28rpx;
+}
+
+.page-title {
+  font-size: 42rpx;
+  font-weight: 600;
+  line-height: 56rpx;
+}
+
+.page-subtitle {
+  margin-top: 4rpx;
+  color: #65736e;
+  font-size: 25rpx;
+}
+
+.ghost-button {
+  width: 112rpx;
+  height: 64rpx;
+  border: 1rpx solid #dbe6e1;
+  border-radius: 10rpx;
+  background: #fff;
+  color: #52635c;
+  font-size: 26rpx;
+  line-height: 64rpx;
+}
+
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  column-gap: 18rpx;
+  margin-bottom: 22rpx;
+}
+
+.summary-item {
+  min-height: 132rpx;
+  border: 1rpx solid #e2ebe7;
+  border-radius: 16rpx;
+  background: #fff;
+  padding: 24rpx;
+}
+
+.summary-item.accent {
+  border-color: #cfe7dc;
+  background: #eef8f3;
+}
+
+.summary-value {
+  color: #1f8f68;
+  font-size: 42rpx;
+  font-weight: 700;
+  line-height: 52rpx;
+}
+
+.summary-label {
+  margin-top: 8rpx;
+  color: #687771;
+  font-size: 25rpx;
+}
+
+.bind-panel {
+  box-sizing: border-box;
+  border: 1rpx solid #e1ebe6;
+  border-radius: 16rpx;
+  background: #fff;
+  padding: 28rpx;
+  margin-bottom: 34rpx;
+}
+
+.section-title {
+  color: #1e2a25;
+  font-size: 32rpx;
+  font-weight: 600;
+  line-height: 44rpx;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  min-height: 88rpx;
+  border-bottom: 1rpx solid #edf2ef;
+}
+
+.form-label {
+  width: 150rpx;
+  color: #63726c;
+  font-size: 26rpx;
+}
+
+.form-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  color: #18231f;
+  font-size: 28rpx;
+}
+
+.picker-row {
+  border-bottom: 0;
+}
+
+.picker-value {
+  flex: 1;
+  color: #1f8f68;
+  font-size: 28rpx;
+  text-align: right;
+}
+
+.primary-button {
+  height: 82rpx;
+  margin-top: 22rpx;
+  border-radius: 12rpx;
+  background: #1f8f68;
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 600;
+  line-height: 82rpx;
+}
+
+.section-header {
+  margin-bottom: 18rpx;
+}
+
+.filter-scroll {
+  width: 100%;
+  white-space: nowrap;
+  margin-bottom: 20rpx;
+}
+
+.filter-track {
+  display: inline-flex;
+  column-gap: 14rpx;
+  padding-right: 28rpx;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 104rpx;
+  height: 58rpx;
+  padding: 0 22rpx;
+  border: 1rpx solid #dce7e2;
+  border-radius: 29rpx;
+  background: #fff;
+  color: #607069;
+  font-size: 25rpx;
+}
+
+.filter-chip.active {
+  border-color: #1f8f68;
+  background: #e7f5ee;
+  color: #1f8f68;
+  font-weight: 600;
+}
+
+.empty-state {
+  min-height: 220rpx;
+  border: 1rpx dashed #c9d7d0;
+  border-radius: 16rpx;
+  background: #fff;
+  text-align: center;
+  padding-top: 62rpx;
+}
+
+.empty-title {
+  color: #2b3833;
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+.empty-text {
+  margin-top: 10rpx;
+  color: #7c8984;
+  font-size: 25rpx;
+}
+
+.device-card {
+  border: 1rpx solid #e1ebe6;
+  border-radius: 16rpx;
+  background: #fff;
+  margin-bottom: 18rpx;
+  overflow: hidden;
+}
+
+.device-main {
+  display: flex;
+  align-items: center;
+  padding: 24rpx;
+}
+
+.device-icon {
+  width: 76rpx;
+  height: 76rpx;
+  border-radius: 18rpx;
+  background: #1f8f68;
+}
+
+.device-icon.watering {
+  background: #1f8f68;
+}
+
+.device-icon.sensor {
+  background: #2d7dd2;
+}
+
+.device-icon.light {
+  background: #d99a21;
+}
+
+.device-icon.socket {
+  background: #7a6aef;
+}
+
+.device-copy {
+  flex: 1;
+  min-width: 0;
+  margin-left: 20rpx;
+}
+
+.device-name {
+  color: #1f2b26;
+  font-size: 30rpx;
+  font-weight: 600;
+  line-height: 40rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-meta {
+  margin-top: 8rpx;
+  color: #71807a;
+  font-size: 24rpx;
+  line-height: 32rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-pill {
+  height: 46rpx;
+  min-width: 74rpx;
+  padding: 0 16rpx;
+  border-radius: 23rpx;
+  background: #e7f5ee;
+  color: #1f8f68;
+  font-size: 23rpx;
+  line-height: 46rpx;
+  text-align: center;
+}
+
+.device-actions {
+  display: flex;
+  justify-content: flex-end;
+  column-gap: 12rpx;
+  border-top: 1rpx solid #edf2ef;
+  padding: 14rpx 20rpx;
+}
+
+.text-button {
+  width: 108rpx;
+  height: 54rpx;
+  border-radius: 10rpx;
+  background: #eef7f3;
+  color: #1f8f68;
+  font-size: 24rpx;
+  line-height: 54rpx;
+}
+
+.text-button.danger {
+  background: #fff0ec;
+  color: #c2573d;
+}
