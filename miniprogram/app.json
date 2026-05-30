@@ -2,14 +2,13 @@
   "pages": [
     "pages/index/index",
     "pages/devices/index",
-    "pages/device/index",
-    "pages/example/index"
+    "pages/device/index"
   ],
   "window": {
     "backgroundColor": "#F5F8F6",
     "backgroundTextStyle": "light",
     "navigationBarBackgroundColor": "#F5F8F6",
-    "navigationBarTitleText": "云汀智能家居",
+    "navigationBarTitleText": "云汀智家",
     "navigationBarTextStyle": "black"
   },
   "sitemapLocation": "sitemap.json",

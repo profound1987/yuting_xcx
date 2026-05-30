@@ -1,32 +1,41 @@
 <view class="devices-page">
-  <view class="topbar">
-    <view>
-      <view class="page-title">设备管理</view>
-      <view class="page-subtitle">{{phone}}</view>
+  <view class="hero-card">
+    <view class="hero-top">
+      <view class="hero-copy">
+        <view class="page-kicker">云汀智家</view>
+        <view class="page-title">设备管理</view>
+        <view class="page-subtitle">{{phoneMasked}}</view>
+      </view>
+      <view class="logout-button" bindtap="logout">退出</view>
     </view>
-    <button class="ghost-button" bindtap="logout">退出</button>
-  </view>
 
-  <view class="summary-row">
-    <view class="summary-item">
-      <view class="summary-value">{{deviceCount}}</view>
-      <view class="summary-label">已绑定</view>
-    </view>
-    <view class="summary-item accent">
-      <view class="summary-value">{{wateringCount}}</view>
-      <view class="summary-label">浇水系统</view>
+    <view class="summary-row">
+      <view class="summary-item">
+        <view class="summary-value">{{deviceCount}}</view>
+        <view class="summary-label">已绑定</view>
+      </view>
+      <view class="summary-item accent">
+        <view class="summary-value">{{onlineCount}}</view>
+        <view class="summary-label">在线设备</view>
+      </view>
     </view>
   </view>
 
   <view class="bind-panel">
-    <view class="section-title">绑定设备</view>
+    <view class="bind-header">
+      <view>
+        <view class="section-title">绑定设备</view>
+        <view class="section-subtitle">输入设备号或扫描设备二维码</view>
+      </view>
+      <view class="scan-button" bindtap="scanDeviceCode">扫码</view>
+    </view>
     <view class="form-row">
       <view class="form-label">设备号</view>
-      <input class="form-input" placeholder="例如 YT-WATER-001" value="{{deviceNo}}" bindinput="onDeviceNoInput" />
+      <input class="form-input" placeholder="例如 YT-AW-0004B-C11F" value="{{deviceNo}}" bindinput="onDeviceNoInput" />
     </view>
     <view class="form-row">
       <view class="form-label">设备名称</view>
-      <input class="form-input" placeholder="阳台自动浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
+      <input class="form-input" placeholder="例如 客厅智能设备" value="{{deviceName}}" bindinput="onDeviceNameInput" />
     </view>
     <picker mode="selector" range="{{deviceTypes}}" range-key="label" value="{{deviceTypeIndex}}" bindchange="onTypeChange">
       <view class="form-row picker-row">
@@ -34,7 +43,7 @@
         <view class="picker-value">{{deviceTypes[deviceTypeIndex].label}}</view>
       </view>
     </picker>
-    <button class="primary-button" bindtap="bindDevice">绑定设备</button>
+    <view class="primary-button" bindtap="bindDevice">绑定设备</view>
   </view>
 
   <view class="section-header">
@@ -53,16 +62,17 @@
 
   <view wx:for="{{visibleDevices}}" wx:key="id" class="device-card">
     <view class="device-main" data-id="{{item.id}}" bindtap="openDevice">
-      <view class="device-icon {{item.type}}"></view>
+      <image wx:if="{{item.type === 'watering'}}" class="device-icon device-icon-image" src="../../images/water-thumb.jpg" mode="aspectFill"></image>
+      <view wx:else class="device-icon {{item.type}}"></view>
       <view class="device-copy">
         <view class="device-name">{{item.name}}</view>
         <view class="device-meta">{{item.typeLabel}} · {{item.deviceNo}}</view>
       </view>
-      <view class="status-pill">{{item.status}}</view>
+      <view class="status-pill {{item.online === false ? 'offline' : ''}}">{{item.status}}</view>
     </view>
     <view class="device-actions">
-      <button class="text-button" data-id="{{item.id}}" bindtap="openDevice">管理</button>
-      <button class="text-button danger" data-id="{{item.id}}" bindtap="deleteDevice">解绑</button>
+      <view class="text-button" data-id="{{item.id}}" bindtap="openDevice">管理</view>
+      <view class="text-button danger" data-id="{{item.id}}" bindtap="deleteDevice">解绑</view>
     </view>
   </view>
 </view>

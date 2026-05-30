@@ -7,7 +7,14 @@
 } 
 
 button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
   background: initial;
+  line-height: 1;
 }
 
 button:focus{

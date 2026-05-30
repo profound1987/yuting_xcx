@@ -1,10 +1,6 @@
 <view class="login-page">
   <view class="brand-area">
-    <view class="brand-mark">汀</view>
-    <view class="brand-copy">
-      <view class="brand-name">云汀智能家居</view>
-      <view class="brand-subtitle">设备远程管理平台</view>
-    </view>
+    <image class="brand-logo" src="../../images/yutingzhijia.png" mode="aspectFit"></image>
   </view>
 
   <view class="login-panel">
@@ -21,20 +17,5 @@
       <button class="code-button" disabled="{{codeButtonDisabled}}" bindtap="sendCode">{{codeButtonText}}</button>
     </view>
     <button class="login-button {{canLogin ? '' : 'is-disabled'}}" disabled="{{!canLogin}}" bindtap="login">登录</button>
-  </view>
-
-  <view class="feature-strip">
-    <view class="feature-item">
-      <view class="feature-value">多设备</view>
-      <view class="feature-label">统一绑定</view>
-    </view>
-    <view class="feature-item">
-      <view class="feature-value">三模式</view>
-      <view class="feature-label">智能浇水</view>
-    </view>
-    <view class="feature-item">
-      <view class="feature-value">云端</view>
-      <view class="feature-label">远程控制</view>
-    </view>
   </view>
 </view>

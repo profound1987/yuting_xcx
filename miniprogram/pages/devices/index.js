@@ -1,20 +1,67 @@
 const SESSION_KEY = "yuntingSession";
 const DEVICES_KEY_PREFIX = "yuntingDevices";
+const { callApi } = require("../../services/apiClient");
 
 const DEVICE_TYPES = [
-  { label: "自动浇水系统", value: "watering" },
-  { label: "环境传感器", value: "sensor" },
-  { label: "智能灯控", value: "light" },
-  { label: "智能插座", value: "socket" },
+  { label: "智能浇水设备", value: "watering", code: "AW" },
+  { label: "环境传感器", value: "sensor", code: "ES" },
+  { label: "智能灯控", value: "light", code: "LC" },
+  { label: "智能插座", value: "socket", code: "SP" },
+  { label: "智能网关", value: "gateway", code: "GW" },
 ];
 
 const FILTERS = [
   { label: "全部", value: "all" },
-  { label: "自动浇水", value: "watering" },
+  { label: "智能浇水", value: "watering" },
   { label: "传感器", value: "sensor" },
   { label: "灯控", value: "light" },
   { label: "插座", value: "socket" },
+  { label: "网关", value: "gateway" },
 ];
+
+const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
+const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
+const CRC32_TABLE = createCrc32Table();
+const DEVICE_NO_ERROR = "设备号不正确";
+const DEVICE_ALREADY_BOUND_ERROR = "设备已被绑定";
+
+function createCrc32Table() {
+  const table = [];
+  for (let index = 0; index < 256; index += 1) {
+    let crc = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+    }
+    table[index] = crc >>> 0;
+  }
+  return table;
+}
+
+function crc32(text) {
+  let crc = 0xffffffff;
+  const input = text.toUpperCase();
+  for (let index = 0; index < input.length; index += 1) {
+    crc = CRC32_TABLE[(crc ^ input.charCodeAt(index)) & 0xff] ^ (crc >>> 8);
+  }
+  return ((crc ^ 0xffffffff) >>> 0).toString(16).toUpperCase().padStart(8, "0");
+}
+
+function getCheckCode(body) {
+  return crc32(`${body}|${DEVICE_CODE_SALT}`).slice(4);
+}
+
+function normalizeDeviceNo(value) {
+  return (value || "").trim().toUpperCase();
+}
+
+function maskPhone(phone) {
+  return String(phone || "").replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
+}
+
+function extractDeviceNo(text) {
+  const matched = normalizeDeviceNo(text).match(/YT-[A-Z]{2}-[0-9A-F]{5}-[0-9A-F]{4}/);
+  return matched ? matched[0] : "";
+}
 
 function createWateringConfig() {
   return {
@@ -25,7 +72,8 @@ function createWateringConfig() {
       durationSeconds: 20,
     },
     schedule: {
-      timesPerDay: 2,
+      intervalDays: 1,
+      times: 2,
       durationSeconds: 30,
     },
     manual: {
@@ -37,6 +85,49 @@ function createWateringConfig() {
 function getDeviceTypeLabel(type) {
   const matched = DEVICE_TYPES.find((item) => item.value === type);
   return matched ? matched.label : "未知设备";
+}
+
+function getDeviceTypeByCode(code) {
+  return DEVICE_TYPES.find((item) => item.code === code);
+}
+
+function parseDeviceNo(value) {
+  const deviceNo = normalizeDeviceNo(value);
+  const matched = deviceNo.match(DEVICE_NO_PATTERN);
+  if (!matched) {
+    return {
+      valid: false,
+      message: DEVICE_NO_ERROR,
+    };
+  }
+
+  const typeCode = matched[1];
+  const serial = matched[2];
+  const checkCode = matched[3];
+  const body = `YT-${typeCode}-${serial}`;
+  const expectedCheckCode = getCheckCode(body);
+  if (checkCode !== expectedCheckCode) {
+    return {
+      valid: false,
+      message: DEVICE_NO_ERROR,
+    };
+  }
+
+  const deviceType = getDeviceTypeByCode(typeCode);
+  if (!deviceType) {
+    return {
+      valid: false,
+      message: DEVICE_NO_ERROR,
+    };
+  }
+
+  return {
+    valid: true,
+    deviceNo,
+    typeCode,
+    serial,
+    deviceType,
+  };
 }
 
 function getDevicesKey(phone) {
@@ -51,9 +142,47 @@ function setStoredDevices(phone, devices) {
   wx.setStorageSync(getDevicesKey(phone), devices);
 }
 
+function bindDeviceRemote(phone, deviceNo, deviceName) {
+  return callApi("device.bind", { phone, deviceNo, deviceName });
+}
+
+function getBindErrorMessage(resp) {
+  if (resp && resp.code === "DEVICE_ALREADY_BOUND") {
+    return DEVICE_ALREADY_BOUND_ERROR;
+  }
+  return DEVICE_NO_ERROR;
+}
+
+function createDeviceFromRemote(parsed, selectedType, deviceName, remoteDevice) {
+  const now = Date.now();
+  const device = remoteDevice || {};
+  const type = device.type || selectedType.value;
+  return {
+    id: device.id || `device_${now}`,
+    deviceNo: parsed.deviceNo,
+    deviceSerial: device.deviceSerial || parsed.serial,
+    deviceTypeCode: device.deviceTypeCode || parsed.typeCode,
+    name: device.name || deviceName || selectedType.label,
+    ownerPhone: device.ownerPhone || "",
+    type,
+    typeLabel: device.typeLabel || getDeviceTypeLabel(type),
+    status: device.status || "在线",
+    online: device.online !== false,
+    bindStatus: device.bindStatus || "bound",
+    mockScenario: device.mockScenario || "",
+    createdAt: device.createdAt || now,
+    updatedAt: device.updatedAt || now,
+    lastWateringAt: device.lastWateringAt || "--",
+    lastSyncedAt: device.lastSyncedAt || null,
+    syncState: device.syncState || (device.online === false ? "offline" : "synced"),
+    config: type === "watering" ? (device.config || createWateringConfig()) : (device.config || {}),
+  };
+}
+
 Page({
   data: {
     phone: "",
+    phoneMasked: "",
     devices: [],
     visibleDevices: [],
     filters: FILTERS,
@@ -63,7 +192,7 @@ Page({
     deviceNo: "",
     deviceName: "",
     deviceCount: 0,
-    wateringCount: 0,
+    onlineCount: 0,
   },
 
   onLoad() {
@@ -82,17 +211,17 @@ Page({
       wx.redirectTo({ url: "/pages/index/index" });
       return false;
     }
-    this.setData({ phone: session.phone });
+    this.setData({ phone: session.phone, phoneMasked: maskPhone(session.phone) });
     return true;
   },
 
   loadDevices() {
     const devices = getStoredDevices(this.data.phone);
-    const wateringCount = devices.filter((item) => item.type === "watering").length;
+    const onlineCount = devices.filter((item) => item.online !== false && item.status !== "离线").length;
     this.setData({
       devices,
       deviceCount: devices.length,
-      wateringCount,
+      onlineCount,
     });
     this.applyFilter();
   },
@@ -114,44 +243,74 @@ Page({
   },
 
   onDeviceNoInput(e) {
-    this.setData({ deviceNo: e.detail.value.trim() });
+    this.setData({ deviceNo: normalizeDeviceNo(e.detail.value) });
   },
 
   onDeviceNameInput(e) {
     this.setData({ deviceName: e.detail.value.trim() });
   },
 
-  bindDevice() {
+  scanDeviceCode() {
+    wx.scanCode({
+      onlyFromCamera: false,
+      scanType: ["qrCode", "barCode"],
+      success: (res) => {
+        const deviceNo = extractDeviceNo(res.result);
+        if (!deviceNo) {
+          wx.showToast({ title: DEVICE_NO_ERROR, icon: "none" });
+          return;
+        }
+
+        const parsed = parseDeviceNo(deviceNo);
+        if (!parsed.valid) {
+          wx.showToast({ title: parsed.message, icon: "none" });
+          return;
+        }
+
+        const deviceTypeIndex = this.data.deviceTypes.findIndex((item) => item.code === parsed.typeCode);
+        this.setData({
+          deviceNo: parsed.deviceNo,
+          deviceTypeIndex: deviceTypeIndex >= 0 ? deviceTypeIndex : this.data.deviceTypeIndex,
+        });
+        wx.showToast({ title: "已读取设备号" });
+      },
+    });
+  },
+
+  async bindDevice() {
     const { deviceNo, deviceName, deviceTypeIndex, deviceTypes } = this.data;
-    if (!/^[A-Za-z0-9_-]{4,32}$/.test(deviceNo)) {
-      wx.showToast({ title: "设备号格式不正确", icon: "none" });
+    const parsed = parseDeviceNo(deviceNo);
+    if (!parsed.valid) {
+      wx.showToast({ title: parsed.message, icon: "none" });
       return;
     }
 
     const devices = getStoredDevices(this.data.phone);
-    if (devices.some((item) => item.deviceNo === deviceNo)) {
-      wx.showToast({ title: "设备已绑定", icon: "none" });
+    if (devices.some((item) => item.deviceNo === parsed.deviceNo)) {
+      wx.showToast({ title: DEVICE_ALREADY_BOUND_ERROR, icon: "none" });
       return;
     }
 
-    const selectedType = deviceTypes[deviceTypeIndex];
-    const now = Date.now();
-    const device = {
-      id: `device_${now}`,
-      deviceNo,
-      name: deviceName || selectedType.label,
-      ownerPhone: this.data.phone,
-      type: selectedType.value,
-      typeLabel: getDeviceTypeLabel(selectedType.value),
-      status: "在线",
-      createdAt: now,
-      updatedAt: now,
-      lastWateringAt: "--",
-      config: selectedType.value === "watering" ? createWateringConfig() : {},
-    };
+    wx.showLoading({ title: "绑定中..." });
+    let bindResp = null;
+    try {
+      bindResp = await bindDeviceRemote(this.data.phone, parsed.deviceNo, deviceName);
+    } catch (error) {
+      bindResp = null;
+    }
+    wx.hideLoading();
+
+    if (!bindResp || !bindResp.success || !bindResp.data || !bindResp.data.device) {
+      wx.showToast({ title: getBindErrorMessage(bindResp), icon: "none" });
+      return;
+    }
+
+    const selectedType = parsed.deviceType || deviceTypes[deviceTypeIndex];
+    const device = createDeviceFromRemote(parsed, selectedType, deviceName, bindResp.data.device);
+    device.ownerPhone = this.data.phone;
 
     devices.unshift(device);
-  setStoredDevices(this.data.phone, devices);
+    setStoredDevices(this.data.phone, devices);
     this.setData({ deviceNo: "", deviceName: "", deviceTypeIndex: 0 });
     wx.showToast({ title: "绑定成功" });
     this.loadDevices();

@@ -1,6 +1,6 @@
 page {
   min-height: 100%;
-  background: #f5f8f6;
+  background: #f6faf9;
   color: #18231f;
   font-family: PingFang SC, Helvetica Neue, Arial, sans-serif;
 }
@@ -8,42 +8,19 @@ page {
 .login-page {
   box-sizing: border-box;
   min-height: 100vh;
-  padding: 64rpx 36rpx 52rpx;
+  padding: 52rpx 36rpx 56rpx;
 }
 
 .brand-area {
-  display: flex;
-  align-items: center;
-  margin-bottom: 48rpx;
-}
-
-.brand-mark {
-  width: 96rpx;
-  height: 96rpx;
-  border-radius: 24rpx;
-  background: #1f8f68;
-  color: #fff;
-  font-size: 48rpx;
-  font-weight: 600;
-  line-height: 96rpx;
   text-align: center;
-  box-shadow: 0 16rpx 32rpx rgba(31, 143, 104, 0.2);
+  margin-bottom: 34rpx;
 }
 
-.brand-copy {
-  margin-left: 24rpx;
-}
-
-.brand-name {
-  font-size: 46rpx;
-  font-weight: 600;
-  line-height: 60rpx;
-}
-
-.brand-subtitle {
-  margin-top: 8rpx;
-  color: #66756f;
-  font-size: 26rpx;
+.brand-logo {
+  width: 312rpx;
+  height: 312rpx;
+  display: block;
+  margin: 0 auto;
 }
 
 .login-panel {
@@ -53,7 +30,7 @@ page {
   border-radius: 16rpx;
   background: #fff;
   padding: 34rpx;
-  box-shadow: 0 18rpx 44rpx rgba(35, 58, 49, 0.08);
+  box-shadow: 0 18rpx 44rpx rgba(14, 76, 91, 0.08);
 }
 
 .panel-title {
@@ -98,14 +75,18 @@ page {
 }
 
 .code-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 176rpx;
   height: 68rpx;
   margin-left: 18rpx;
+  padding: 0;
   border-radius: 10rpx;
-  background: #e8f4ef;
-  color: #1f8f68;
+  background: #e7f7f7;
+  color: #087d91;
   font-size: 26rpx;
-  line-height: 68rpx;
+  line-height: 1;
 }
 
 .code-button[disabled] {
@@ -114,48 +95,23 @@ page {
 }
 
 .login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   height: 88rpx;
   margin-top: 10rpx;
+  padding: 0;
   border-radius: 12rpx;
-  background: #1f8f68;
+  background: #087d91;
   color: #fff;
   font-size: 32rpx;
   font-weight: 600;
-  line-height: 88rpx;
+  line-height: 1;
 }
 
 .login-button.is-disabled,
 .login-button[disabled] {
   background: #cbd8d2;
   color: #fff;
-}
-
-.feature-strip {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  column-gap: 16rpx;
-  margin-top: 28rpx;
-}
-
-.feature-item {
-  min-height: 112rpx;
-  border-radius: 14rpx;
-  background: #fff;
-  border: 1rpx solid #e5ede9;
-  text-align: center;
-  padding-top: 20rpx;
-}
-
-.feature-value {
-  color: #1f8f68;
-  font-size: 28rpx;
-  font-weight: 600;
-  line-height: 38rpx;
-}
-
-.feature-label {
-  margin-top: 6rpx;
-  color: #73817b;
-  font-size: 23rpx;
 }
