@@ -2,7 +2,8 @@
   "pages": [
     "pages/index/index",
     "pages/devices/index",
-    "pages/device/index"
+    "pages/device/index",
+    "pages/about/index"
   ],
   "window": {
     "backgroundColor": "#F5F8F6",

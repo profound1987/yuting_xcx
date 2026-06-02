@@ -146,11 +146,28 @@ function bindDeviceRemote(phone, deviceNo, deviceName) {
   return callApi("device.bind", { phone, deviceNo, deviceName });
 }
 
+function unbindDeviceRemote(phone, deviceNo) {
+  return callApi("device.unbind", { phone, deviceNo });
+}
+
 function getBindErrorMessage(resp) {
+  if (resp && resp.message) {
+    return resp.message;
+  }
   if (resp && resp.code === "DEVICE_ALREADY_BOUND") {
     return DEVICE_ALREADY_BOUND_ERROR;
   }
   return DEVICE_NO_ERROR;
+}
+
+function showBindError(resp) {
+  const message = getBindErrorMessage(resp);
+  const isRiskMessage = resp && (resp.code === "DEVICE_BIND_LOCKED" || (resp.data && resp.data.bindRisk));
+  if (isRiskMessage || message.length > 12) {
+    wx.showModal({ title: "绑定失败", content: message, showCancel: false });
+    return;
+  }
+  wx.showToast({ title: message, icon: "none" });
 }
 
 function createDeviceFromRemote(parsed, selectedType, deviceName, remoteDevice) {
@@ -301,7 +318,7 @@ Page({
     wx.hideLoading();
 
     if (!bindResp || !bindResp.success || !bindResp.data || !bindResp.data.device) {
-      wx.showToast({ title: getBindErrorMessage(bindResp), icon: "none" });
+      showBindError(bindResp);
       return;
     }
 
@@ -322,19 +339,46 @@ Page({
 
   deleteDevice(e) {
     const id = e.currentTarget.dataset.id;
+    const device = getStoredDevices(this.data.phone).find((item) => item.id === id);
+    if (!device) {
+      wx.showToast({ title: "设备不存在", icon: "none" });
+      return;
+    }
+
     wx.showModal({
-      title: "解绑设备",
-      content: "确定解绑这台设备吗？",
-      success: (res) => {
+      title: "解除绑定",
+      content: "解除绑定后，该设备的配置和本地数据会从当前账号删除，确定解除绑定吗？",
+      confirmText: "解除绑定",
+      confirmColor: "#c2573d",
+      success: async (res) => {
         if (!res.confirm) {
           return;
         }
+
+        wx.showLoading({ title: "解绑中..." });
+        let unbindResp = null;
+        try {
+          unbindResp = await unbindDeviceRemote(this.data.phone, device.deviceNo);
+        } catch (error) {
+          unbindResp = null;
+        }
+        wx.hideLoading();
+
+        if (!unbindResp || !unbindResp.success) {
+          wx.showToast({ title: (unbindResp && unbindResp.message) || "解绑失败", icon: "none" });
+          return;
+        }
+
         const devices = getStoredDevices(this.data.phone).filter((item) => item.id !== id);
         setStoredDevices(this.data.phone, devices);
         wx.showToast({ title: "已解绑" });
         this.loadDevices();
       },
     });
+  },
+
+  openAbout() {
+    wx.navigateTo({ url: "/pages/about/index" });
   },
 
   logout() {

@@ -16,6 +16,6 @@
       </view>
       <button class="code-button" disabled="{{codeButtonDisabled}}" bindtap="sendCode">{{codeButtonText}}</button>
     </view>
-    <button class="login-button {{canLogin ? '' : 'is-disabled'}}" disabled="{{!canLogin}}" bindtap="login">登录</button>
+    <button class="login-button {{canLogin ? '' : 'is-disabled'}}" disabled="{{!canLogin || loggingIn}}" bindtap="login">登录</button>
   </view>
 </view>

@@ -2,7 +2,7 @@
 
 ## 1. 文档目标
 
-本文档定义“云汀智能家居”登录模块的手机端和云端设计规范。后续开发手机端页面、云函数、云数据库和接口时，应以本文档作为登录模块的业务标准。
+本文档定义“云汀智能家居”登录模块的手机端和云端设计规范。后续开发手机端页面、云端 API、云函数或数据库时，应以本文档作为登录模块的业务标准。
 
 本文重点回答：
 
@@ -57,6 +57,18 @@
 
 云端必须作为登录态和账号归属的最终裁决方。
 
+### 3.3 当前测试环境实现状态
+
+当前测试环境已接入真实手机号验证码登录：
+
+- 小程序登录页调用统一 API 适配层，`auth.sendCode` 负责发送验证码，`auth.loginByCode` 负责校验验证码并创建会话。
+- API 地址为 `https://api.yutingsmarthome.xin/api`，小程序配置为 `mode: "http"`。
+- 服务端为 FastAPI，Nginx 负责 HTTPS 证书和反向代理。
+- 短信发送使用阿里云号码认证服务 `Dypnsapi.SendSmsVerifyCode`，服务端配置 `YT_SMS_PROVIDER=aliyun_dypns`。
+- 当前测试服务器关闭开发验证码，`YT_ENABLE_DEV_SMS=false`；生产/测试登录不会返回 `devCode`。
+
+开发调试时可以临时开启 `YT_ENABLE_DEV_SMS=true` 返回固定开发验证码，但真机测试和体验版应保持真实短信链路。
+
 ## 4. 核心身份定义
 
 ### 4.1 业务用户 `userId`
@@ -73,15 +85,18 @@
 
 ### 4.3 微信 `OPENID`
 
-`OPENID` 是微信小程序下的用户身份，由云函数通过 `cloud.getWXContext()` 获取。
+`OPENID` 是微信小程序下的用户身份。微信云开发模式由云函数通过 `cloud.getWXContext()` 获取；自建 HTTPS 后端模式由小程序调用 `wx.login()` 获取 code，再由服务端调用微信 `jscode2session` 换取。
 
 手机端不得传入 `openid` 作为可信身份。云端也不得信任手机端传入的 `openid`。
+
+如果使用自建 HTTP 服务器而不是微信云函数，服务器不能直接调用 `cloud.getWXContext()`。此时必须由小程序调用 `wx.login()` 获取一次性 `code`，再把 `code` 发给服务器；服务器使用微信 `jscode2session` 接口，通过小程序 `appid` 和 `appsecret` 换取真实 `OPENID`。服务器只信任微信接口返回的 `OPENID`，不信任前端传入的 `openid` 字段。
 
 `OPENID` 的作用：
 
 - 辅助确认当前请求来自哪个微信用户。
 - 让会话令牌只能在创建它的微信身份下使用。
 - 支持用户再次打开小程序时校验本地会话是否属于当前微信用户。
+- 支持客服让用户在“关于/账号信息”页面读出 OpenID，并在后台确认该 OpenID 是否绑定到同一个手机号用户。
 
 ### 4.4 会话令牌 `sessionToken`
 
@@ -93,7 +108,7 @@
 
 - `sessionToken` 必须由云端生成，必须足够随机。
 - 云端数据库只保存 `sessionToken` 的哈希值，不保存明文。
-- 手机端保存明文 `sessionToken`，并在请求云函数时携带。
+- 手机端保存明文 `sessionToken`，并在请求云端接口时携带。
 - 云端必须同时校验 `sessionToken`、当前 `OPENID`、用户状态和会话状态。
 
 ## 5. 手机端本地会话设计
@@ -181,7 +196,7 @@
 
 云端处理顺序：
 
-1. 通过 `cloud.getWXContext()` 获取当前 `OPENID`。
+1. 通过可信来源获取当前微信身份：云开发模式使用 `cloud.getWXContext()`，自建 HTTPS 后端模式使用 `wx.login()` + `jscode2session`。未配置微信登录的测试环境可以先跳过 OpenID 强校验，但不能信任前端直接传入的 `openid`。
 2. 计算 `sessionToken` 哈希。
 3. 查询 `sessions` 集合。
 4. 校验会话存在、未过期、未注销。
@@ -283,6 +298,26 @@
 
 这样可以支持用户换手机号或切换账号，同时避免一个 `OPENID` 同时持有多个活跃业务身份。
 
+### 8.4 关于页与用户对账
+
+小程序应提供“关于”或“账号信息”入口，用于展示：
+
+- 小程序 AppID、版本号和发布环境。
+- 当前 API 模式，例如 `mock`、`http`、`cloud`。
+- 当前登录手机号的脱敏展示。
+- 服务端返回的 `userId`。
+- 服务端通过微信 code 换取并绑定过的 `OPENID`、`UnionID` 和绑定时间。
+
+客服对账流程：
+
+1. 客服询问用户手机号，并在后台用 `admin.user.findByPhone` 查询用户。
+2. 用户打开小程序“关于/账号信息”页面，读取或复制页面上的 `userId` 和 `OPENID`。
+3. 客服核对后台返回的 `user.id`、`wechatBindings[].openid` 是否与用户页面一致。
+4. 如果手机号一致但 OpenID 不一致，说明用户可能换了微信号、使用了另一个小程序环境，或尚未完成微信身份绑定。
+5. 如果用户页面显示“服务端未配置微信登录”，说明当前环境还没有配置 `YT_WECHAT_APP_ID` 和 `YT_WECHAT_APP_SECRET`，不能进行真实 OpenID 对账。
+
+关于页展示的 OpenID 必须来自服务端 `user.getProfile` 或 `auth.bindWechat` 返回，不能由前端本地伪造。Mock 模式可以显示 `mock_openid_xxx`，但必须只用于开发调试。
+
 ## 9. 云端数据模型
 
 ### 9.1 `users` 用户表
@@ -314,9 +349,13 @@
   "_id": "openid_bind_xxx",
   "userId": "user_xxx",
   "openid": "openid_xxx",
+  "unionid": "unionid_xxx",
+  "appid": "wx_appid_xxx",
+  "source": "wechat_code",
   "status": "active",
   "createdAt": 1710000000000,
-  "lastLoginAt": 1710000000000,
+  "updatedAt": 1710000000000,
+  "lastSeenAt": 1710000000000,
   "unboundAt": null
 }
 ```
@@ -409,13 +448,25 @@
 
 云端逻辑：
 
-1. 获取当前 `OPENID`。
+1. 如果已配置微信登录，获取并校验当前 `OPENID`；当前自建 HTTP 测试环境允许先以手机号验证码完成登录，OpenID 绑定由 `auth.bindWechat` / `user.getProfile` 后续补齐。
 2. 校验手机号格式。
 3. 校验发送频率。
-4. 生成验证码。
-5. 保存验证码哈希、过期时间、状态。
-6. 调用短信服务商。
+4. 生成 6 位验证码。
+5. 调用短信服务商发送验证码。
+6. 发送成功后保存验证码哈希、过期时间、状态。
 7. 返回冷却时间。
+
+当前测试环境短信服务商为阿里云号码认证服务：
+
+```text
+Provider: aliyun_dypns
+Endpoint: dypnsapi.aliyuncs.com
+Action: SendSmsVerifyCode
+TemplateCode: 100001
+TemplateParam: {"code":"验证码","min":"5"}
+```
+
+验证码必须在短信接口返回成功后再写入 `sms_codes`，避免短信发送失败但服务端仍允许验证码登录。
 
 响应：
 
@@ -445,7 +496,7 @@
 
 云端逻辑：
 
-1. 获取当前 `OPENID`。
+1. 如果已配置微信登录，获取并校验当前 `OPENID`；当前自建 HTTP 测试环境允许先完成手机号验证码登录。
 2. 校验手机号和验证码格式。
 3. 查询最近一条可用验证码。
 4. 校验验证码哈希、过期时间、使用状态、错误次数。
@@ -453,8 +504,8 @@
 6. 按手机号查找用户。
 7. 手机号不存在则创建新用户。
 8. 手机号存在则复用旧用户。
-9. 绑定或更新当前 `OPENID`。
-10. 注销当前 `OPENID` 旧的活跃会话。
+9. 如请求中完成了微信登录态交换，绑定或更新当前 `OPENID`。
+10. 注销同一登录上下文下旧的活跃会话。
 11. 创建新的会话。
 12. 返回 `authSession`。
 
@@ -617,18 +668,16 @@ function requireAuth() {
 
 ### 13.3 云端调用封装
 
-手机端应该封装统一云函数请求方法，自动附带 `sessionToken`。
+手机端应该封装统一云端请求方法，自动附带 `sessionToken`。
 
 ```js
-function callApi(type, data) {
-  const authSession = wx.getStorageSync("authSession");
-  return wx.cloud.callFunction({
-    name: "api",
-    data: {
-      type,
-      sessionToken: authSession && authSession.sessionToken,
-      data,
-    },
+const { callApi } = require("../../services/apiClient");
+
+function callAuthedApi(type, data = {}) {
+  const session = wx.getStorageSync("yuntingSession");
+  return callApi(type, {
+    ...data,
+    sessionToken: session && session.sessionToken,
   });
 }
 ```
@@ -643,14 +692,14 @@ function callApi(type, data) {
 
 鉴权方法输入：
 
-- 当前云函数事件 `event`。
-- 当前微信上下文 `wxContext`。
+- 当前接口请求数据。
+- 当前可信微信身份上下文；云开发模式来自 `wxContext`，自建 HTTPS 后端模式来自 `jscode2session` 结果。
 
 鉴权方法输出：
 
 - `userId`。
 - `openid`。
-- `sessionId`。
+- `sessionToken` 对应的会话记录。
 - 用户状态。
 
 后续设备、浇水、用户资料接口只能使用鉴权方法输出的 `userId`，不能使用前端传入的 `userId`。
@@ -700,16 +749,22 @@ function callApi(type, data) {
 
 当前版本建议按新手机号登录到新账号或已有账号。后续如要支持“换绑手机号”，应单独设计手机号换绑流程，要求旧手机号或已登录会话 + 新手机号验证码共同确认。
 
-## 16. 当前原型改造要求
+## 16. 当前改造状态与后续要求
 
-当前小程序原型使用本地演示验证码和本地缓存登录态。进入云端版本时，需要按以下顺序改造：
+当前登录模块已经完成从本地开发验证码到真实后端验证码的切换：
 
-1. 手机端登录页保留现有交互，但验证码发送改为调用 `auth.sendCode`。
-2. 手机端登录按钮改为调用 `auth.loginByCode`。
-3. 手机端本地存储从当前演示结构改为 `authSession` 标准结构。
-4. 新增手机端统一 `requireAuth` 和 `callApi` 封装。
-5. 云端新增 `users`、`user_openids`、`sms_codes`、`sessions`、`auth_events` 集合。
-6. 云端新增统一鉴权中间层。
-7. 设备和浇水接口全部改为通过云端鉴权后的 `userId` 查询数据。
+1. 手机端登录页已经调用 `auth.sendCode` 发送真实短信验证码。
+2. 手机端登录按钮已经调用 `auth.loginByCode` 校验验证码。
+3. 手机端保存服务端返回的 `authSession`、`sessionToken` 和用户信息。
+4. 小程序接口模式已切到 `http`，请求 `https://api.yutingsmarthome.xin/api`。
+5. 服务端已建立 `users`、`sms_codes`、`sessions`、`auth_events` 等登录相关表。
+6. 服务端短信配置使用 `aliyun_dypns`，当前测试环境 `YT_ENABLE_DEV_SMS=false`。
 
-完成以上改造后，登录模块即可作为后续设备管理、浇水控制、用户资料等模块的统一身份基础。
+后续仍需完成：
+
+1. 统一业务接口鉴权，设备和浇水接口逐步改为通过 `sessionToken` 解析出的 `userId` 查询和写入数据。
+2. 配置 `YT_WECHAT_APP_ID` 和 `YT_WECHAT_APP_SECRET` 后，把 `wx.login()` 换取 OpenID 纳入登录或账号绑定闭环。
+3. 增加更完整的验证码风控，例如 IP 限流、每日发送上限、图形验证码或设备指纹。
+4. 完善会话续期、会话吊销和多端登录策略。
+
+完成后，登录模块即可作为后续设备管理、浇水控制、用户资料等模块的统一身份基础。

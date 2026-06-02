@@ -31,6 +31,33 @@ page {
   min-width: 0;
 }
 
+.hero-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  column-gap: 12rpx;
+}
+
+.about-button,
+.logout-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 104rpx;
+  height: 60rpx;
+  box-sizing: border-box;
+  border-radius: 30rpx;
+  font-size: 26rpx;
+  line-height: 1;
+}
+
+.about-button {
+  border: 1rpx solid #b8dee3;
+  background: #e7f7f7;
+  color: #087d91;
+  font-weight: 600;
+}
+
 .page-kicker {
   color: #087d91;
   font-size: 24rpx;
@@ -53,18 +80,9 @@ page {
 }
 
 .logout-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 116rpx;
-  height: 60rpx;
-  box-sizing: border-box;
   border: 1rpx solid #cfe2e5;
-  border-radius: 30rpx;
   background: #f7fbfb;
   color: #566762;
-  font-size: 26rpx;
-  line-height: 1;
 }
 
 .summary-row {

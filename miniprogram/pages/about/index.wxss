@@ -1,0 +1,147 @@
+page {
+  min-height: 100%;
+  background: #f6faf9;
+  color: #18231f;
+  font-family: PingFang SC, Helvetica Neue, Arial, sans-serif;
+}
+
+.about-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 24rpx 24rpx 56rpx;
+}
+
+.top-panel,
+.info-panel {
+  box-sizing: border-box;
+  border: 1rpx solid #e1ebe6;
+  border-radius: 18rpx;
+  background: #fff;
+  box-shadow: 0 12rpx 30rpx rgba(35, 58, 49, 0.05);
+}
+
+.top-panel {
+  display: flex;
+  align-items: center;
+  padding: 28rpx;
+  margin-bottom: 22rpx;
+}
+
+.brand-logo {
+  width: 96rpx;
+  height: 96rpx;
+  flex-shrink: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+  margin-left: 20rpx;
+}
+
+.brand-title {
+  font-size: 40rpx;
+  font-weight: 700;
+  line-height: 52rpx;
+}
+
+.brand-subtitle {
+  margin-top: 4rpx;
+  color: #65736e;
+  font-size: 25rpx;
+  line-height: 34rpx;
+}
+
+.info-panel {
+  padding: 28rpx;
+  margin-bottom: 20rpx;
+}
+
+.section-title {
+  margin-bottom: 12rpx;
+  color: #1e2a25;
+  font-size: 31rpx;
+  font-weight: 600;
+  line-height: 42rpx;
+}
+
+.info-row {
+  display: flex;
+  align-items: center;
+  min-height: 76rpx;
+  border-bottom: 1rpx solid #edf2ef;
+}
+
+.info-row:last-child {
+  border-bottom: 0;
+}
+
+.info-label {
+  width: 150rpx;
+  flex-shrink: 0;
+  color: #63726c;
+  font-size: 25rpx;
+}
+
+.info-value {
+  flex: 1;
+  min-width: 0;
+  color: #18231f;
+  font-size: 25rpx;
+  line-height: 34rpx;
+  overflow-wrap: anywhere;
+}
+
+.monospace {
+  font-family: Menlo, Consolas, monospace;
+  font-size: 23rpx;
+}
+
+.copy-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 84rpx;
+  height: 52rpx;
+  margin-left: 14rpx;
+  border-radius: 26rpx;
+  background: #e7f7f7;
+  color: #087d91;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.status-text {
+  margin-bottom: 12rpx;
+  color: #65736e;
+  font-size: 25rpx;
+  line-height: 36rpx;
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  column-gap: 16rpx;
+  margin-top: 22rpx;
+}
+
+.primary-button,
+.secondary-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 78rpx;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.primary-button {
+  background: #087d91;
+  color: #fff;
+}
+
+.secondary-button {
+  border: 1rpx solid #cfe2e5;
+  background: #f7fbfb;
+  color: #566762;
+}

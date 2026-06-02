@@ -1,0 +1,82 @@
+<view class="about-page">
+  <view class="top-panel">
+    <image class="brand-logo" src="../../images/yutingzhijia.png" mode="aspectFit"></image>
+    <view class="brand-copy">
+      <view class="brand-title">云汀智家</view>
+      <view class="brand-subtitle">账号与小程序信息</view>
+    </view>
+  </view>
+
+  <view class="info-panel">
+    <view class="section-title">小程序</view>
+    <view class="info-row">
+      <view class="info-label">AppID</view>
+      <view class="info-value">{{appId || '未知'}}</view>
+      <view wx:if="{{appId}}" class="copy-button" data-value="{{appId}}" bindtap="copyText">复制</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">版本</view>
+      <view class="info-value">{{appVersion}}</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">环境</view>
+      <view class="info-value">{{envVersion}}</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">API 模式</view>
+      <view class="info-value">{{apiMode}}</view>
+    </view>
+  </view>
+
+  <view class="info-panel">
+    <view class="section-title">账号</view>
+    <view class="info-row">
+      <view class="info-label">手机号</view>
+      <view class="info-value">{{phoneMasked || '未登录'}}</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">用户 ID</view>
+      <view class="info-value monospace">{{userId || '未同步'}}</view>
+      <view wx:if="{{userId}}" class="copy-button" data-value="{{userId}}" bindtap="copyText">复制</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">账号状态</view>
+      <view class="info-value">{{userStatus}}</view>
+    </view>
+  </view>
+
+  <view class="info-panel">
+    <view class="section-title">微信身份</view>
+    <view class="status-text">{{wechatStatus}}</view>
+    <view class="info-row">
+      <view class="info-label">OpenID</view>
+      <view class="info-value monospace">{{openid || '未绑定'}}</view>
+      <view wx:if="{{openid}}" class="copy-button" data-value="{{openid}}" bindtap="copyText">复制</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">UnionID</view>
+      <view class="info-value monospace">{{unionid || '无'}}</view>
+      <view wx:if="{{unionid}}" class="copy-button" data-value="{{unionid}}" bindtap="copyText">复制</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">绑定时间</view>
+      <view class="info-value">{{openidBoundAt || '未绑定'}}</view>
+    </view>
+    <view class="action-row">
+      <view class="secondary-button" bindtap="loadProfile">刷新资料</view>
+      <view class="primary-button" bindtap="bindWechat">获取微信身份</view>
+    </view>
+  </view>
+
+  <view class="info-panel">
+    <view class="section-title">设备环境</view>
+    <view class="info-row">
+      <view class="info-label">SDK</view>
+      <view class="info-value">{{sdkVersion}}</view>
+    </view>
+    <view class="info-row">
+      <view class="info-label">系统</view>
+      <view class="info-value">{{systemText}}</view>
+    </view>
+  </view>
+</view>

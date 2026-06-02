@@ -6,7 +6,10 @@
         <view class="page-title">设备管理</view>
         <view class="page-subtitle">{{phoneMasked}}</view>
       </view>
-      <view class="logout-button" bindtap="logout">退出</view>
+      <view class="hero-actions">
+        <view class="about-button" bindtap="openAbout">关于</view>
+        <view class="logout-button" bindtap="logout">退出</view>
+      </view>
     </view>
 
     <view class="summary-row">

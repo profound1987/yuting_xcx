@@ -1,7 +1,12 @@
 const MOCK_REGISTRY_KEY = "yuntingMockDeviceRegistryV2";
 const MOCK_USERS_KEY = "yuntingMockUsersV1";
+const MOCK_BIND_ATTEMPTS_KEY = "yuntingMockBindAttemptsV1";
 const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
 const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
+const BIND_FAILURE_WARNING_THRESHOLD = 3;
+const BIND_FAILURE_LOCK_THRESHOLD = 10;
+const BIND_FAILURE_LOCK_HOURS = 24;
+const BIND_FAILURE_WINDOW_MS = BIND_FAILURE_LOCK_HOURS * 60 * 60 * 1000;
 
 const DEVICE_TYPES = [
   { label: "智能浇水设备", value: "watering", code: "AW" },
@@ -45,6 +50,10 @@ function clone(value) {
 function formatTime(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function maskPhone(phone) {
+  return String(phone || "").replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
 }
 
 function getDeviceTypeByCode(code) {
@@ -182,6 +191,66 @@ function setUsers(users) {
   wx.setStorageSync(MOCK_USERS_KEY, users);
 }
 
+function getBindAttempts() {
+  return wx.getStorageSync(MOCK_BIND_ATTEMPTS_KEY) || [];
+}
+
+function setBindAttempts(attempts) {
+  const windowStart = Date.now() - BIND_FAILURE_WINDOW_MS;
+  wx.setStorageSync(MOCK_BIND_ATTEMPTS_KEY, attempts.filter((item) => item.createdAt >= windowStart));
+}
+
+function getBindFailureSummary(phone) {
+  const now = Date.now();
+  const windowStart = now - BIND_FAILURE_WINDOW_MS;
+  const failures = getBindAttempts()
+    .filter((item) => item.phone === phone && item.result === "failed" && item.createdAt >= windowStart)
+    .sort((left, right) => right.createdAt - left.createdAt);
+  const failedCount = failures.length;
+  const lockedUntil = failedCount >= BIND_FAILURE_LOCK_THRESHOLD
+    ? failures.slice(0, BIND_FAILURE_LOCK_THRESHOLD).reduce((oldest, item) => Math.min(oldest, item.createdAt), failures[0].createdAt) + BIND_FAILURE_WINDOW_MS
+    : null;
+  return {
+    failedCount24h: failedCount,
+    warningThreshold: BIND_FAILURE_WARNING_THRESHOLD,
+    lockThreshold: BIND_FAILURE_LOCK_THRESHOLD,
+    remainingBeforeLock: Math.max(0, BIND_FAILURE_LOCK_THRESHOLD - failedCount),
+    lockHours: BIND_FAILURE_LOCK_HOURS,
+    locked: !!(lockedUntil && now < lockedUntil),
+    lockedUntil,
+    lockedUntilText: lockedUntil ? formatTime(new Date(lockedUntil)) : "",
+  };
+}
+
+function recordBindAttempt(phone, inputDeviceNo, normalizedDeviceNo, result, code, message, reason) {
+  if (!phone) {
+    return;
+  }
+  const attempts = getBindAttempts();
+  attempts.push({
+    id: `mock_bind_attempt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    phone,
+    inputDeviceNo: inputDeviceNo || "",
+    normalizedDeviceNo: normalizedDeviceNo || "",
+    result,
+    code,
+    message,
+    reason,
+    createdAt: Date.now(),
+  });
+  setBindAttempts(attempts);
+}
+
+function bindRiskMessage(message, summary) {
+  if (summary.failedCount24h >= BIND_FAILURE_LOCK_THRESHOLD) {
+    return `${message}。当前手机号24小时内绑定失败已达到${BIND_FAILURE_LOCK_THRESHOLD}次，${BIND_FAILURE_LOCK_HOURS}小时内将无法再次绑定。`;
+  }
+  if (summary.failedCount24h > BIND_FAILURE_WARNING_THRESHOLD) {
+    return `${message}。当前手机号24小时内绑定失败已达到${summary.failedCount24h}次，超过${BIND_FAILURE_LOCK_THRESHOLD}次将锁定${BIND_FAILURE_LOCK_HOURS}小时。`;
+  }
+  return message;
+}
+
 function ensureUser(phone) {
   if (!phone) {
     return null;
@@ -196,12 +265,27 @@ function ensureUser(phone) {
   const user = {
     id: `mock_user_${phone}`,
     phone,
+    phoneMasked: maskPhone(phone),
     status: "active",
+    wechatBindings: [],
     createdAt: now,
     updatedAt: now,
   };
   users[phone] = user;
   setUsers(users);
+  return user;
+}
+
+function normalizeUser(user) {
+  if (!user) {
+    return null;
+  }
+  if (!user.phoneMasked) {
+    user.phoneMasked = maskPhone(user.phone);
+  }
+  if (!Array.isArray(user.wechatBindings)) {
+    user.wechatBindings = [];
+  }
   return user;
 }
 
@@ -254,13 +338,35 @@ function success(data) {
   });
 }
 
-function failure(code, message) {
+function failure(code, message, data = null) {
   return Promise.resolve({
     success: false,
     code,
     message,
-    data: null,
+    data,
   });
+}
+
+function bindFailure(phone, inputDeviceNo, normalizedDeviceNo, code, message, reason) {
+  recordBindAttempt(phone, inputDeviceNo, normalizedDeviceNo, "failed", code, message, reason);
+  if (!phone) {
+    return failure(code, message);
+  }
+  const summary = getBindFailureSummary(phone);
+  return failure(code, bindRiskMessage(message, summary), { bindRisk: summary });
+}
+
+function bindLockedFailure(phone, inputDeviceNo, normalizedDeviceNo) {
+  if (!phone) {
+    return null;
+  }
+  const summary = getBindFailureSummary(phone);
+  if (!summary.locked) {
+    return null;
+  }
+  const message = `绑定失败次数过多，请在${summary.lockedUntilText}后再试`;
+  recordBindAttempt(phone, inputDeviceNo, normalizedDeviceNo, "blocked", "DEVICE_BIND_LOCKED", message, "too_many_bind_failures");
+  return failure("DEVICE_BIND_LOCKED", message, { bindRisk: summary });
 }
 
 function checkBindable(data) {
@@ -272,22 +378,29 @@ function checkBindable(data) {
 function bindDevice(data) {
   const phone = data.phone || "";
   const deviceName = (data.deviceName || "").trim();
+  const inputDeviceNo = data.deviceNo || "";
+  const normalizedDeviceNo = normalizeDeviceNo(inputDeviceNo);
+  const locked = bindLockedFailure(phone, inputDeviceNo, normalizedDeviceNo);
+  if (locked) {
+    return locked;
+  }
+
   const { registry, record } = getRecord(data.deviceNo);
   if (!record || record.status !== "registered") {
-    return failure("DEVICE_NOT_BINDABLE", "设备号不正确");
+    return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "DEVICE_NOT_BINDABLE", "设备号不正确", "not_registered");
   }
 
   const user = ensureUser(phone);
   if (!user) {
-    return failure("USER_REQUIRED", "请先登录");
+    return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "USER_REQUIRED", "请先登录", "user_required");
   }
 
   if (record.bindStatus === "bound" && record.ownerPhone && record.ownerPhone !== phone) {
-    return failure("DEVICE_ALREADY_BOUND", "设备已被绑定");
+    return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定", "bound_by_other");
   }
 
   if (record.bindStatus === "bound" && record.mockScenario === "sale-bound-online") {
-    return failure("DEVICE_ALREADY_BOUND", "设备已被绑定");
+    return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定", "bound_by_other");
   }
 
   record.bindStatus = "bound";
@@ -301,6 +414,84 @@ function bindDevice(data) {
   return success({
     user,
     device: createDevicePayload(record, record.name),
+  });
+}
+
+function getUserProfile(data) {
+  const user = normalizeUser(ensureUser(data.phone || ""));
+  if (!user) {
+    return failure("SESSION_MISSING", "请先登录");
+  }
+  return success({
+    user: {
+      id: user.id,
+      phoneMasked: user.phoneMasked,
+      status: user.status,
+      createdAt: user.createdAt,
+      createdAtText: formatTime(new Date(user.createdAt)),
+      lastLoginAt: user.updatedAt,
+      lastLoginAtText: formatTime(new Date(user.updatedAt)),
+    },
+    wechatBindings: clone(user.wechatBindings),
+  });
+}
+
+function bindWechat(data) {
+  const users = getUsers();
+  const user = normalizeUser(ensureUser(data.phone || ""));
+  if (!user) {
+    return failure("SESSION_MISSING", "请先登录");
+  }
+  const now = Date.now();
+  const openid = `mock_openid_${user.phone}`;
+  const binding = {
+    id: `mock_openid_binding_${user.phone}`,
+    openid,
+    unionid: "",
+    appid: "mock_appid",
+    source: "mock",
+    status: "active",
+    createdAt: now,
+    createdAtText: formatTime(new Date(now)),
+    updatedAt: now,
+    updatedAtText: formatTime(new Date(now)),
+    lastSeenAt: now,
+    lastSeenAtText: formatTime(new Date(now)),
+  };
+  user.wechatBindings = [binding];
+  user.updatedAt = now;
+  users[user.phone] = user;
+  setUsers(users);
+  return success({ user, wechatBinding: binding });
+}
+
+function unbindDevice(data) {
+  const phone = data.phone || "";
+  const { registry, record } = getRecord(data.deviceNo);
+  if (!record) {
+    return failure("DEVICE_NOT_FOUND", "设备不存在");
+  }
+
+  if (record.ownerPhone && record.ownerPhone !== phone) {
+    return failure("DEVICE_FORBIDDEN", "无权解绑该设备");
+  }
+
+  const now = Date.now();
+  record.bindStatus = "unbound";
+  record.ownerPhone = null;
+  record.ownerUserId = null;
+  record.name = record.typeLabel;
+  record.config = record.type === "watering" ? createWateringConfig() : {};
+  record.lastWateringAt = "--";
+  record.lastSyncedAt = null;
+  record.displayStatus = record.online ? "在线" : "离线";
+  record.updatedAt = now;
+  registry[record.deviceNo] = record;
+  setRegistry(registry);
+
+  return success({
+    deviceNo: record.deviceNo,
+    unboundAt: now,
   });
 }
 
@@ -395,11 +586,20 @@ function stopManualWatering(data) {
 }
 
 function mockCall(type, data) {
+  if (type === "user.getProfile") {
+    return getUserProfile(data || {});
+  }
+  if (type === "auth.bindWechat") {
+    return bindWechat(data || {});
+  }
   if (type === "device.checkBindable") {
     return checkBindable(data || {});
   }
   if (type === "device.bind") {
     return bindDevice(data || {});
+  }
+  if (type === "device.unbind") {
+    return unbindDevice(data || {});
   }
   if (type === "device.getStatus") {
     return getStatus(data || {});

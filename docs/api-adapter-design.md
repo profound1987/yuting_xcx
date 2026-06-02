@@ -10,6 +10,8 @@
 - 联调阶段：小程序使用 `http` 模式，请求开发机、测试服务器或内网穿透后的服务地址。
 - 上线阶段：小程序使用 `http` 模式请求正式 HTTPS 域名，或使用 `cloud` 模式调用微信云函数。
 
+当前测试环境已经切到 `http` 模式，实际请求地址为 `https://api.yutingsmarthome.xin/api`。该域名通过 Nginx 反向代理到服务器本机 FastAPI 服务 `127.0.0.1:8000`。
+
 当前代码已提供统一配置入口：`miniprogram/config/api.js`。
 
 ## 2. 为什么不能直接换 IP 上线
@@ -115,8 +117,8 @@
 
 ```js
 const API_CONFIG = {
-  mode: "mock",
-  baseUrl: "https://api.example.com",
+  mode: "http",
+  baseUrl: "https://api.yutingsmarthome.xin",
   cloudFunctionName: "api",
   timeout: 10000,
 };
@@ -130,6 +132,12 @@ const API_CONFIG = {
 
 页面代码只调用 `callApi(type, data)`，不直接关心当前是 Mock、HTTP 还是云函数。
 
+当前真机测试必须同时满足：
+
+- `baseUrl` 使用 `https://api.yutingsmarthome.xin`，不能使用裸 IP 或 HTTP。
+- 微信公众平台的小程序后台已把 `https://api.yutingsmarthome.xin` 加入 request 合法域名。
+- 服务器 Nginx 已配置有效 HTTPS 证书，并把请求反向代理到 `127.0.0.1:8000`。
+
 ## 5. 自建服务器建议
 
 如果后续选择自建服务器，推荐最小后端模块如下：
@@ -140,6 +148,7 @@ const API_CONFIG = {
 | 鉴权 | `auth.loginByCode` | 校验验证码，创建登录会话 |
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
 | 设备 | `device.bind` | 绑定设备到当前用户 |
+| 设备 | `device.unbind` | 当前用户解除设备绑定并清理该设备在当前账号下的数据 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.getStatus` | 查询设备在线状态和传感器数据 |
 | 浇水 | `watering.saveConfig` | 保存浇水模式并生成设备同步指令 |
@@ -147,6 +156,8 @@ const API_CONFIG = {
 | 浇水 | `watering.stopManual` | 下发停止手动浇水指令 |
 
 后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。`device.bind` 只有在后端确认或创建用户、成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
+
+`device.unbind` 必须要求当前用户拥有该设备。解除绑定前，手机端需要明确提示用户：解除绑定后，该设备的配置和本地数据会从当前账号删除。只有后端成功清理设备归属、配置、缓存状态和解绑审计记录后，手机端才从本地列表移除设备。
 
 绑定失败提示策略：
 
@@ -191,7 +202,7 @@ const API_CONFIG = {
 | 环境 | `mode` | `baseUrl`/云函数 | 用途 |
 | --- | --- | --- | --- |
 | 本地原型 | `mock` | 不使用 | 页面和流程开发 |
-| 联调测试 | `http` | 测试 HTTPS 域名或内网穿透地址 | 后端联调 |
+| 联调测试 | `http` | `https://api.yutingsmarthome.xin` | 真机测试、后端联调 |
 | 正式发布 | `http` 或 `cloud` | 正式 HTTPS 域名或正式云环境 | 用户使用 |
 
 如果使用自建服务器，推荐尽早用域名和 HTTPS 联调，而不是长期依赖 IP。这样可以更接近真实发布环境，也能提前发现微信合法域名、证书、跨环境配置等问题。
