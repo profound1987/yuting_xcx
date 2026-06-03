@@ -240,13 +240,23 @@ MVP 阶段可以基于 `device_commands` 回答：
 | 今日新增用户 | 当日 `createdAt` 在今天的用户数 |
 | 设备总数 | `device_registry` 总量 |
 | 已绑定设备数 | `bindStatus = bound` |
+| 未绑定设备数 | `bindStatus = unbound`，用于识别在售但未绑定设备 |
 | 在线设备数 | `online = true` 或最近心跳未超时 |
+| 离线设备数 | `online = false` 或最近心跳已超时 |
 | 今日绑定成功数 | 当日绑定成功事件数 |
 | 今日绑定失败数 | 当日绑定失败尝试数 |
 | 今日绑定锁定数 | 当日被 `DEVICE_BIND_LOCKED` 拒绝的请求数 |
 | 今日设备控制数 | 当日 `device_commands` 数 |
 | 失败指令数 | 状态为 `failed` 或 `timeout` 的指令数 |
-| 设备类型分布 | 按 `AW`、`ES`、`LC`、`SP`、`GW` 统计总数、已绑定数、在线数 |
+| 设备类型分布 | 按 `AW`、`ES`、`LC`、`SP`、`GW` 统计总数、已绑定数、未绑定数、在线数、离线数 |
+
+总览界面交互要求：
+
+1. 顶部核心摘要必须直接展示设备总台数、在线设备台数、离线设备台数、已绑定设备台数和未绑定设备台数。
+2. 设备类型区按类型展示统计卡片，例如 `AW` 智能浇水设备、`ES` 环境传感器。每个类型卡片展示该类型下的 `totalCount`、`boundCount`、`unboundCount`、`onlineCount`、`offlineCount`。
+3. 用户点击某个设备类型，例如“智能浇水设备”，后台应调用 `admin.devices.search` 并传入 `typeCode=AW`，只列出该类型下的设备。
+4. 用户继续选择绑定状态或在线状态时，后台应追加 `bindStatus=bound/unbound`、`online=online/offline` 过滤条件。
+5. 对于在售但未绑定设备，列表中必须明确展示 `bindStatus: "unbound"`；同时总览仍展示已绑定设备数量，避免运营把未绑定库存误认为用户设备。
 
 ### 5.2 用户管理
 
@@ -256,6 +266,7 @@ MVP 阶段可以基于 `device_commands` 回答：
 - 查看用户基础信息、注册时间、最近登录时间、账号状态。
 - 查看当前有效会话数量和最近活跃时间。
 - 查看用户绑定的设备列表。
+- 用户设备列表必须包含设备号、设备类型、绑定时间、当前是否在线、绑定状态和设备显示状态。
 - 查看用户最近绑定尝试。
 - 查看用户最近设备控制指令。
 - 禁用或恢复用户。
@@ -268,6 +279,7 @@ MVP 阶段可以基于 `device_commands` 回答：
 - 按设备号查询设备。
 - 查看设备类型、流水号、生产注册状态、绑定状态、在线状态。
 - 查看当前绑定用户、绑定时间、解绑历史。
+- 查看设备完整详情，包括设备号、类型码、流水号、设备类型、名称、生产/注册状态、绑定状态、在线状态、当前绑定用户、最近同步时间、当前配置和测试场景标记。
 - 查看最近控制指令和参数。
 - 查看最近工作事件和传感器上报。
 - 禁用或恢复设备。
@@ -457,6 +469,7 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
 | API type | 功能 |
 | --- | --- |
 | `admin.overview` | 查询用户、设备、绑定、控制等总览统计 |
+| `admin.devices.search` | 按设备类型、绑定状态、在线状态列出设备，用于总览下钻 |
 | `admin.user.findByPhone` | 按手机号查询用户、注册时间、登录状态、绑定设备、绑定尝试 |
 | `admin.user.findByOpenid` | 按 OpenID 反查绑定的业务用户 |
 | `admin.device.findByNo` | 按设备号查询设备、绑定用户、绑定历史、控制记录 |
@@ -571,7 +584,9 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
     "usersActive": 118,
     "devicesTotal": 240,
     "devicesBound": 240,
+    "devicesUnbound": 0,
     "devicesOnline": 210,
+    "devicesOffline": 30,
     "devicesByType": [
       {
         "typeCode": "AW",
@@ -579,13 +594,18 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
         "typeLabel": "智能浇水设备",
         "totalCount": 100,
         "boundCount": 60,
-        "onlineCount": 55
+        "unboundCount": 40,
+        "onlineCount": 55,
+        "offlineCount": 45
       }
     ],
     "registrySummary": {
       "devicesTotal": 500,
       "devicesBound": 251,
-      "devicesOnline": 375
+      "devicesUnbound": 249,
+      "devicesOnline": 375,
+      "devicesOffline": 125,
+      "devicesByType": []
     },
     "seedInventory": {
       "usersTotal": 2,
@@ -593,7 +613,10 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
       "boundOfflineOwnerPhone": "00000000000",
       "devicesTotal": 500,
       "devicesBound": 250,
-      "devicesOnline": 375
+      "devicesUnbound": 250,
+      "devicesOnline": 375,
+      "devicesOffline": 125,
+      "devicesByType": []
     },
     "bindAttempts24h": 80,
     "bindFailures24h": 12,
@@ -605,6 +628,57 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
 ```
 
 说明：开发版服务端会预置 500 台测试设备台账和 2 个测试绑定用户，用于验证绑定、离线和已绑定场景。已绑定在线测试设备默认归属 `11111111111`，已绑定离线测试设备默认归属 `00000000000`。`admin.overview` 默认运营口径排除这些预置数据；如果需要核对完整 `device_registry` 表规模，查看 `data.registrySummary`；如果需要核对预置测试台账规模，查看 `data.seedInventory`。
+
+### 7.6 `admin.devices.search` 返回示例
+
+请求示例：
+
+```json
+{
+  "typeCode": "AW",
+  "bindStatus": "unbound",
+  "online": "online",
+  "limit": 50
+}
+```
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "data": {
+    "filters": {
+      "typeCode": "AW",
+      "deviceType": "",
+      "bindStatus": "unbound",
+      "status": "",
+      "online": 1
+    },
+    "totalMatched": 50,
+    "returnedCount": 50,
+    "limit": 50,
+    "devices": [
+      {
+        "deviceNo": "YT-AW-00000-A324",
+        "typeCode": "AW",
+        "serial": "00000",
+        "deviceType": "watering",
+        "typeLabel": "智能浇水设备",
+        "status": "registered",
+        "bindStatus": "unbound",
+        "online": true,
+        "ownerUserId": null,
+        "ownerPhoneMasked": "",
+        "boundAt": null
+      }
+    ]
+  }
+}
+```
+
+总览界面按类型下钻时使用该接口。例如点击“智能浇水设备”时传入 `typeCode=AW`；点击“未绑定”时传入 `bindStatus=unbound`；点击“离线”时传入 `online=offline`。设备列表中的每一行必须展示设备号、类型、绑定状态、在线状态、绑定用户和绑定时间。
 
 按手机号查询用户时，如果返回：
 
@@ -623,10 +697,14 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
 | 问题 | 使用接口 | 读取字段 |
 | --- | --- | --- |
 | 目前绑定了多少台设备 | `admin.overview` | `data.devicesBound` |
+| 目前有多少台设备未绑定 | `admin.overview` | `data.registrySummary.devicesUnbound` |
 | 目前有多少台设备在线 | `admin.overview` | `data.devicesOnline` |
+| 目前有多少台设备离线 | `admin.overview` | `data.devicesOffline` |
 | 每种设备分别有多少台 | `admin.overview` | `data.devicesByType[].totalCount` |
 | 每种设备已绑定多少台 | `admin.overview` | `data.devicesByType[].boundCount` |
+| 每种设备未绑定多少台 | `admin.overview` | `data.registrySummary.devicesByType[].unboundCount` |
 | 每种设备在线多少台 | `admin.overview` | `data.devicesByType[].onlineCount` |
+| 列出某一类型设备 | `admin.devices.search` | `data.devices[]` |
 
 ## 8. 客服回复边界
 
@@ -656,10 +734,11 @@ MVP 阶段继续使用统一 `/api` 入口，通过 `type` 区分管理员操作
 
 本模块 MVP 已实现：
 
-1. 管理员总览统计：用户数、设备数、绑定数、在线数、按设备类型统计。
+1. 管理员总览统计：用户数、设备数、绑定数、未绑定数、在线数、离线数、按设备类型统计。
 2. 管理员查询接口：按手机号、设备号、绑定尝试、控制指令查询。
-3. 管理员安全操作接口：禁用用户、恢复用户、禁用设备、恢复设备、强制解绑。
-4. 绑定失败风控：超过 3 次预警，达到 10 次后按手机号锁定 24 小时。
+3. 管理员设备列表接口：按设备类型、绑定状态、在线状态筛选设备，用于总览下钻。
+4. 管理员安全操作接口：禁用用户、恢复用户、禁用设备、恢复设备、强制解绑。
+5. 绑定失败风控：超过 3 次预警，达到 10 次后按手机号锁定 24 小时。
 
 真实产品阶段继续补充：
 

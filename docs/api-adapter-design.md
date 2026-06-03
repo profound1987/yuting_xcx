@@ -14,6 +14,8 @@
 
 当前代码已提供统一配置入口：`miniprogram/config/api.js`。
 
+当前排障期还保留两个仅限开发环境的临时 fallback：微信开发者工具可通过本机 SSH 隧道访问 `http://127.0.0.1:18000`；手机预览/开发版在明确关闭合法域名校验时，才可临时通过 `http://39.97.237.214:8000` 直连测试服务。它们只用于绕过当前 HTTPS TLS reset 问题，不能用于体验版、正式版或长期安全方案。
+
 ## 2. 为什么不能直接换 IP 上线
 
 开发工具里可以临时使用 IP 或非正式域名联调，但正式版小程序请求后端时需要满足微信平台限制：
@@ -119,6 +121,13 @@
 const API_CONFIG = {
   mode: "http",
   baseUrl: "https://api.yutingsmarthome.xin",
+  useDebugHttp: true,
+  debugHttpBaseUrl: "http://39.97.237.214:8000",
+  debugHttpDevtoolsOnly: true,
+  useDevtoolsTunnel: true,
+  devtoolsBaseUrl: "http://127.0.0.1:18000",
+  useDevelopHttpFallback: false,
+  developBaseUrl: "http://39.97.237.214:8000",
   cloudFunctionName: "api",
   timeout: 10000,
 };
@@ -127,7 +136,10 @@ const API_CONFIG = {
 模式说明：
 
 - `mode: "mock"`：不请求远端，使用本地模拟接口。
-- `mode: "http"`：请求 `${baseUrl}/api`。
+- `mode: "http"`：默认请求 `${baseUrl}/api`。
+- `useDebugHttp: true`：使用 `${debugHttpBaseUrl}/api` 做 HTTP 调试；当前 `debugHttpDevtoolsOnly=true`，只在微信开发者工具中生效，避免真机普通预览触发 `url not in domain list`。
+- `useDevtoolsTunnel: true`：仅微信开发者工具环境请求 `${devtoolsBaseUrl}/api`，需要提前启动 SSH 隧道。
+- `useDevelopHttpFallback: true`：仅手机预览/开发版请求 `${developBaseUrl}/api`，用于 HTTPS reset 排障期的临时联调。微信真机默认仍会校验 request 合法域名，所以只有在真机调试已关闭合法域名校验时才能开启。
 - `mode: "cloud"`：调用 `cloudFunctionName` 指定的云函数。
 
 页面代码只调用 `callApi(type, data)`，不直接关心当前是 Mock、HTTP 还是云函数。
@@ -137,6 +149,8 @@ const API_CONFIG = {
 - `baseUrl` 使用 `https://api.yutingsmarthome.xin`，不能使用裸 IP 或 HTTP。
 - 微信公众平台的小程序后台已把 `https://api.yutingsmarthome.xin` 加入 request 合法域名。
 - 服务器 Nginx 已配置有效 HTTPS 证书，并把请求反向代理到 `127.0.0.1:8000`。
+
+如果手机预览/开发版仍出现 `request:fail net::ERR_CONNECTION_RESET`，可以临时开启 `useDevelopHttpFallback`。此时需要确保当前包是开发版，并在调试设置中允许开发阶段不校验合法域名和 HTTPS 证书限制；否则会出现 `url not in domain list:39.97.237.214`。体验版和正式版不能依赖这个开关。
 
 ## 5. 自建服务器建议
 
@@ -202,6 +216,8 @@ const API_CONFIG = {
 | 环境 | `mode` | `baseUrl`/云函数 | 用途 |
 | --- | --- | --- | --- |
 | 本地原型 | `mock` | 不使用 | 页面和流程开发 |
+| 开发者工具联调 | `http` | `http://127.0.0.1:18000` | 通过 SSH 隧道绕过本机 HTTPS reset |
+| 手机开发版联调 | `http` | `http://39.97.237.214:8000` | 仅用于 HTTPS reset 排障期 |
 | 联调测试 | `http` | `https://api.yutingsmarthome.xin` | 真机测试、后端联调 |
 | 正式发布 | `http` 或 `cloud` | 正式 HTTPS 域名或正式云环境 | 用户使用 |
 

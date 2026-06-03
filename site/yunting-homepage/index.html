@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>云汀智慧家居展示</title>
+  <meta name="description" content="云汀智慧家居展示用于展示个人智慧家庭设备状态与功能。">
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17212b;
+      --muted: #637083;
+      --line: #dbe4ea;
+      --panel: #ffffff;
+      --soft: #f4f8f9;
+      --brand: #027d8a;
+      --brand-dark: #075069;
+      --leaf: #3e9c55;
+      --warn: #d98024;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background: #f7fafb;
+      line-height: 1.65;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .topbar {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    .topbar-inner,
+    .hero-inner,
+    .section-inner,
+    .footer-inner {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .topbar-inner {
+      min-height: 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand img {
+      width: 42px;
+      height: 42px;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+
+    .brand-name {
+      font-size: 18px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .nav-note {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: right;
+    }
+
+    .hero {
+      background:
+        linear-gradient(120deg, rgba(2, 125, 138, 0.12), rgba(62, 156, 85, 0.12)),
+        var(--soft);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero-inner {
+      min-height: 480px;
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      align-items: center;
+      gap: 48px;
+      padding: 56px 0 42px;
+    }
+
+    .eyebrow {
+      color: var(--brand);
+      font-weight: 700;
+      margin: 0 0 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 7vw, 64px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      margin: 22px 0 0;
+      color: #344557;
+      font-size: 18px;
+      max-width: 620px;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 6px 12px;
+      border: 1px solid rgba(2, 125, 138, 0.22);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--brand-dark);
+      font-size: 14px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--leaf);
+    }
+
+    .hero-visual {
+      display: grid;
+      place-items: center;
+      min-height: 320px;
+      padding: 28px;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(2, 125, 138, 0.18);
+      border-radius: 8px;
+    }
+
+    .hero-visual img {
+      width: min(100%, 360px);
+      height: auto;
+      object-fit: contain;
+    }
+
+    section {
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-inner {
+      padding: 48px 0;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 26px;
+      letter-spacing: 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 26px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      background: var(--panel);
+    }
+
+    .item strong {
+      display: block;
+      font-size: 17px;
+      margin-bottom: 8px;
+    }
+
+    .item p,
+    .intro p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .info-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      display: table;
+    }
+
+    .info-table th,
+    .info-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .info-table th {
+      width: 180px;
+      color: var(--muted);
+      font-weight: 600;
+      background: #f8fbfc;
+    }
+
+    .info-table tr:last-child th,
+    .info-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .footer {
+      background: #10212a;
+      color: rgba(255, 255, 255, 0.84);
+    }
+
+    .footer-inner {
+      padding: 26px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      font-size: 14px;
+    }
+
+    .icp-placeholder {
+      color: rgba(255, 255, 255, 0.64);
+    }
+
+    @media (max-width: 860px) {
+      .topbar-inner {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 14px 0;
+      }
+
+      .nav-note {
+        text-align: left;
+      }
+
+      .hero-inner {
+        grid-template-columns: 1fr;
+        min-height: auto;
+        gap: 28px;
+        padding-top: 38px;
+      }
+
+      .hero-visual {
+        min-height: 240px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-inner {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="/assets/yutingzhijia.png" alt="云汀智家标识">
+        <div class="brand-name">云汀智慧家居展示</div>
+      </div>
+      <div class="nav-note">个人智慧家庭设备状态与功能展示</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <p class="eyebrow">Smart Home Living</p>
+          <h1>云汀智慧家居展示</h1>
+          <p class="lead">本网站用于展示个人智慧家庭场景，包含智能浇水、环境感知、灯控、插座和网关等设备的状态与功能说明。</p>
+          <div class="status-row" aria-label="展示范围">
+            <span class="status-pill"><span class="status-dot"></span>设备状态展示</span>
+            <span class="status-pill"><span class="status-dot"></span>家庭场景记录</span>
+            <span class="status-pill"><span class="status-dot"></span>小程序服务说明</span>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <img src="/assets/yutingzhijia.png" alt="云汀智家智能家居图形">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner intro">
+        <h2>网站信息</h2>
+        <p>本站为中文简体个人空间，用于记录和展示个人智慧家庭设备的状态、功能和使用场景。</p>
+        <table class="info-table" aria-label="备案网站信息">
+          <tr>
+            <th>网站名称</th>
+            <td>云汀智慧家居展示</td>
+          </tr>
+          <tr>
+            <th>域名</th>
+            <td>yutingsmarthome.xin</td>
+          </tr>
+          <tr>
+            <th>网站首页</th>
+            <td>www.yutingsmarthome.xin</td>
+          </tr>
+          <tr>
+            <th>服务内容</th>
+            <td>展示个人智慧家庭，可以浏览各个智能设备的状态与功能。</td>
+          </tr>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-inner">
+        <h2>展示内容</h2>
+        <div class="grid">
+          <article class="item">
+            <strong>智能浇水</strong>
+            <p>展示家庭植物浇水设备的在线状态、配置说明和使用场景。</p>
+          </article>
+          <article class="item">
+            <strong>环境感知</strong>
+            <p>展示温湿度、环境传感器等家庭感知设备的状态说明。</p>
+          </article>
+          <article class="item">
+            <strong>智能控制</strong>
+            <p>展示灯控、插座和网关等设备的连接状态与功能入口。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>Copyright © 2026 云汀智慧家居展示</span>
+      <span class="icp-placeholder">ICP备案号待备案通过后补充并链接至工信部备案系统</span>
+    </div>
+  </footer>
+</body>
+</html>

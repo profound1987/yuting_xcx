@@ -20,6 +20,8 @@
 
 - 小程序 API 模式：`http`。
 - API 域名：`https://api.yutingsmarthome.xin`。
+- 本地开发者工具 HTTP 调试：当前 `useDebugHttp=true` 且 `debugHttpDevtoolsOnly=true`，开发者工具会请求 `http://39.97.237.214:8000/api`，用于绕过本机 HTTPS reset；真机普通预览、体验版和正式版仍使用 HTTPS 域名。
+- 当前开发版临时 fallback：微信开发者工具可走 `http://127.0.0.1:18000` SSH 隧道；手机预览/开发版只有在真机调试已关闭合法域名校验时，才可临时开启 `http://39.97.237.214:8000`，用于绕过当前 HTTPS TLS reset 排障；体验版和正式版仍应使用 HTTPS 域名。
 - 真实短信：`YT_SMS_PROVIDER=aliyun_dypns`，当前测试服务器 `YT_ENABLE_DEV_SMS=false`。
 - 微信公众平台需要配置 request 合法域名：`https://api.yutingsmarthome.xin`。
 
@@ -54,7 +56,7 @@ python .\tools\admin_client\yunting_admin_ui.py
 ## 后续接入建议
 
 - 将后端 Uvicorn 进程纳入 systemd 管理，并让业务服务只监听 `127.0.0.1:8000`。
-- 关闭服务器公网 `8000` 端口，只保留 Nginx 的 `80/443` 作为公网入口。
+- HTTPS reset 问题稳定解决后，关闭开发版 HTTP fallback 和服务器公网 `8000` 端口，只保留 Nginx 的 `80/443` 作为公网入口。
 - 将设备和浇水接口逐步改为基于 `sessionToken` 的统一鉴权。
 - 将“开始浇水”“保存设置”等操作对接设备通信协议或 IoT 平台接口。
 

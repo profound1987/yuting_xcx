@@ -16,6 +16,8 @@ from tkinter import messagebox, scrolledtext, ttk
 
 DEFAULT_BASE_URL = "https://api.yutingsmarthome.xin"
 DEFAULT_TIMEOUT_SECONDS = "12"
+SSH_TUNNEL_BASE_URL = "http://127.0.0.1:18000"
+SSH_TUNNEL_COMMAND = "ssh -N -L 18000:127.0.0.1:8000 -i C:\\Users\\THINK\\.ssh\\yunting_dev_ed25519 yunting@39.97.237.214"
 INVALID_INPUT = object()
 
 
@@ -60,7 +62,7 @@ class AdminApiClient:
         except urllib.error.HTTPError as error:
             raise AdminClientError(format_http_error(error, started_at)) from error
         except urllib.error.URLError as error:
-            raise AdminClientError(f"连接服务器失败：{error.reason}") from error
+            raise AdminClientError(format_url_error(error)) from error
         except TimeoutError as error:
             raise AdminClientError("请求超时") from error
 
@@ -87,7 +89,7 @@ class AdminApiClient:
         except urllib.error.HTTPError as error:
             raise AdminClientError(format_http_error(error, started_at)) from error
         except urllib.error.URLError as error:
-            raise AdminClientError(f"连接服务器失败：{error.reason}") from error
+            raise AdminClientError(format_url_error(error)) from error
         except TimeoutError as error:
             raise AdminClientError("请求超时") from error
 
@@ -194,9 +196,22 @@ class AdminApp(tk.Tk):
 
     def _build_overview_tab(self) -> None:
         frame = self._new_tab("总览")
-        frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text="查看用户、设备、绑定失败和控制指令的整体统计。", style="Hint.TLabel").grid(row=0, column=0, sticky="w")
-        self._button(frame, "刷新总览", lambda: self.run_admin_call("总览统计", "admin.overview", {})).grid(row=1, column=0, sticky="w", pady=(16, 0))
+        frame.columnconfigure(1, weight=1)
+        self.overview_type_code_var = tk.StringVar()
+        self.overview_bind_status_var = tk.StringVar()
+        self.overview_online_var = tk.StringVar()
+        self.overview_limit_var = tk.StringVar(value="50")
+
+        ttk.Label(frame, text="查看用户、设备、绑定失败和控制指令的整体统计。", style="Hint.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        self._button(frame, "刷新总览", lambda: self.run_admin_call("总览统计", "admin.overview", {})).grid(row=1, column=0, columnspan=2, sticky="w", pady=(16, 18))
+
+        ttk.Separator(frame).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+        ttk.Label(frame, text="按类型和状态列出设备", style="Title.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        self._combo_row(frame, 4, "设备类型码", self.overview_type_code_var, ["", "AW", "ES", "LC", "SP", "GW"])
+        self._combo_row(frame, 5, "绑定状态", self.overview_bind_status_var, ["", "bound", "unbound"])
+        self._combo_row(frame, 6, "在线状态", self.overview_online_var, ["", "online", "offline"])
+        self._entry_row(frame, 7, "返回条数", self.overview_limit_var, width=12)
+        self._button(frame, "列出设备", self.search_devices).grid(row=8, column=1, sticky="w", pady=(10, 0))
 
     def _build_user_tab(self) -> None:
         frame = self._new_tab("用户查询")
@@ -485,6 +500,19 @@ class AdminApp(tk.Tk):
             return
         self.run_admin_call("按设备号查询设备", "admin.device.findByNo", payload)
 
+    def search_devices(self) -> None:
+        payload = compact_payload(
+            {
+                "typeCode": self.overview_type_code_var.get(),
+                "bindStatus": self.overview_bind_status_var.get(),
+                "online": self.overview_online_var.get(),
+                "limit": self.read_limit(self.overview_limit_var, default=50),
+            }
+        )
+        if payload is None:
+            return
+        self.run_admin_call("按条件列出设备", "admin.devices.search", payload)
+
     def search_bind_attempts(self) -> None:
         payload = compact_payload(
             {
@@ -643,6 +671,18 @@ def format_http_error(error: urllib.error.HTTPError, started_at: float) -> str:
     raw_body = error.read().decode("utf-8", errors="replace")
     body = parse_json_or_text(raw_body)
     return f"HTTP {error.code}，耗时 {elapsed_ms} ms：\n{format_body(body)}"
+
+
+def format_url_error(error: urllib.error.URLError) -> str:
+    reason = getattr(error, "reason", error)
+    message = f"连接服务器失败：{reason}"
+    if isinstance(reason, ConnectionResetError) or "10054" in str(reason) or "Connection reset" in str(reason):
+        message += (
+            "\n\n检测到连接被重置。若 HTTPS 443 被 TLS 握手重置影响，可以先保持 SSH 隧道运行："
+            f"\n{SSH_TUNNEL_COMMAND}"
+            f"\n然后将服务器地址改为：{SSH_TUNNEL_BASE_URL}"
+        )
+    return message
 
 
 def main() -> None:

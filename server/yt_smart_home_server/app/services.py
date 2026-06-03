@@ -84,6 +84,19 @@ def read_since_ms(data: dict[str, Any]) -> int | None:
         return None
 
 
+def parse_admin_online_filter(value: Any) -> int | None | str:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "online", "yes", "在线"}:
+        return 1
+    if text in {"0", "false", "offline", "no", "离线"}:
+        return 0
+    return "invalid"
+
+
 def normalize_device_no(value: str | None) -> str:
     return (value or "").strip().upper()
 
@@ -107,6 +120,19 @@ def get_device_type_by_code(type_code: str) -> dict[str, str] | None:
         if item["code"] == type_code:
             return item
     return None
+
+
+def parse_admin_online_filter(value: Any) -> int | None | str:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "online", "yes", "在线"}:
+        return 1
+    if text in {"0", "false", "offline", "no", "离线"}:
+        return 0
+    return "invalid"
 
 
 def parse_device_no(value: str | None) -> dict[str, Any] | None:
@@ -1382,42 +1408,93 @@ def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
     if forbidden:
         return forbidden
     last_24h = now_ms() - 24 * 60 * 60 * 1000
+
+    def value(row, key: str) -> int:
+        return int(row[key] or 0)
+
+    def type_items(stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "typeCode": type_info["code"],
+                "deviceType": type_info["value"],
+                "typeLabel": type_info["label"],
+                "totalCount": (stats.get(type_info["code"]) or {}).get("total_count", 0) or 0,
+                "boundCount": (stats.get(type_info["code"]) or {}).get("bound_count", 0) or 0,
+                "unboundCount": (stats.get(type_info["code"]) or {}).get("unbound_count", 0) or 0,
+                "onlineCount": (stats.get(type_info["code"]) or {}).get("online_count", 0) or 0,
+                "offlineCount": (stats.get(type_info["code"]) or {}).get("offline_count", 0) or 0,
+            }
+            for type_info in DEVICE_TYPES
+        ]
+
     with db() as connection:
         seed_user_marks = sql_marks(SEED_USER_IDS)
         seed_default_user_marks = sql_marks(SEED_DEFAULT_USER_IDS)
         real_owner_filter = f"owner_user_id IS NOT NULL AND owner_user_id NOT IN ({seed_user_marks})"
+        type_stats_sql = """
+            SELECT
+              type_code,
+              device_type,
+              type_label,
+              COUNT(*) AS total_count,
+              SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS bound_count,
+              SUM(CASE WHEN bind_status = 'unbound' THEN 1 ELSE 0 END) AS unbound_count,
+              SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS online_count,
+              SUM(CASE WHEN online = 0 THEN 1 ELSE 0 END) AS offline_count
+            FROM device_registry
+        """
         type_rows = rows_to_dicts(
             connection.execute(
                 f"""
-                SELECT
-                  type_code,
-                  device_type,
-                  type_label,
-                  COUNT(*) AS total_count,
-                  SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS bound_count,
-                  SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS online_count
-                FROM device_registry
-                                WHERE {real_owner_filter}
+                {type_stats_sql}
+                WHERE {real_owner_filter}
                 GROUP BY type_code, device_type, type_label
                 ORDER BY type_code
                 """,
-                                SEED_USER_IDS,
+                SEED_USER_IDS,
             ).fetchall()
         )
         type_stats = {row["type_code"]: row for row in type_rows}
+        real_totals = connection.execute(
+            f"""
+            SELECT
+              COUNT(*) AS devices_total,
+              SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS devices_bound,
+              SUM(CASE WHEN bind_status = 'unbound' THEN 1 ELSE 0 END) AS devices_unbound,
+              SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS devices_online,
+              SUM(CASE WHEN online = 0 THEN 1 ELSE 0 END) AS devices_offline
+            FROM device_registry
+            WHERE {real_owner_filter}
+            """,
+            SEED_USER_IDS,
+        ).fetchone()
+        registry_type_rows = rows_to_dicts(
+            connection.execute(
+                f"""
+                {type_stats_sql}
+                GROUP BY type_code, device_type, type_label
+                ORDER BY type_code
+                """
+            ).fetchall()
+        )
+        registry_type_stats = {row["type_code"]: row for row in registry_type_rows}
+        registry_totals = connection.execute(
+            """
+            SELECT
+              COUNT(*) AS devices_total,
+              SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS devices_bound,
+              SUM(CASE WHEN bind_status = 'unbound' THEN 1 ELSE 0 END) AS devices_unbound,
+              SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS devices_online,
+              SUM(CASE WHEN online = 0 THEN 1 ELSE 0 END) AS devices_offline
+            FROM device_registry
+            """
+        ).fetchone()
         seed_scenario_params = (*SEED_SCENARIOS,)
         seed_scenario_marks = ",".join("?" for _ in SEED_SCENARIOS)
         seed_type_rows = rows_to_dicts(
             connection.execute(
                 f"""
-                SELECT
-                  type_code,
-                  device_type,
-                  type_label,
-                  COUNT(*) AS total_count,
-                  SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS bound_count,
-                  SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS online_count
-                FROM device_registry
+                {type_stats_sql}
                 WHERE mock_scenario IN ({seed_scenario_marks})
                 GROUP BY type_code, device_type, type_label
                 ORDER BY type_code
@@ -1426,6 +1503,19 @@ def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
             ).fetchall()
         )
         seed_type_stats = {row["type_code"]: row for row in seed_type_rows}
+        seed_totals = connection.execute(
+            f"""
+            SELECT
+              COUNT(*) AS devices_total,
+              SUM(CASE WHEN bind_status = 'bound' THEN 1 ELSE 0 END) AS devices_bound,
+              SUM(CASE WHEN bind_status = 'unbound' THEN 1 ELSE 0 END) AS devices_unbound,
+              SUM(CASE WHEN online = 1 THEN 1 ELSE 0 END) AS devices_online,
+              SUM(CASE WHEN online = 0 THEN 1 ELSE 0 END) AS devices_offline
+            FROM device_registry
+            WHERE mock_scenario IN ({seed_scenario_marks})
+            """,
+            seed_scenario_params,
+        ).fetchone()
         overview = {
             "metricScope": "real_user_bound_devices",
             "note": "默认统计排除了预置测试用户和测试台账；完整台账见 registrySummary，预置测试台账见 seedInventory。",
@@ -1434,33 +1524,19 @@ def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
                 f"SELECT COUNT(*) AS count FROM users WHERE status = 'active' AND id NOT IN ({seed_user_marks})",
                 SEED_USER_IDS,
             ).fetchone()["count"],
-            "devicesTotal": connection.execute(
-                f"SELECT COUNT(*) AS count FROM device_registry WHERE {real_owner_filter}",
-                SEED_USER_IDS,
-            ).fetchone()["count"],
-            "devicesBound": connection.execute(
-                f"SELECT COUNT(*) AS count FROM device_registry WHERE bind_status = 'bound' AND {real_owner_filter}",
-                SEED_USER_IDS,
-            ).fetchone()["count"],
-            "devicesOnline": connection.execute(
-                f"SELECT COUNT(*) AS count FROM device_registry WHERE online = 1 AND {real_owner_filter}",
-                SEED_USER_IDS,
-            ).fetchone()["count"],
-            "devicesByType": [
-                {
-                    "typeCode": type_info["code"],
-                    "deviceType": type_info["value"],
-                    "typeLabel": type_info["label"],
-                    "totalCount": (type_stats.get(type_info["code"]) or {}).get("total_count", 0),
-                    "boundCount": (type_stats.get(type_info["code"]) or {}).get("bound_count", 0) or 0,
-                    "onlineCount": (type_stats.get(type_info["code"]) or {}).get("online_count", 0) or 0,
-                }
-                for type_info in DEVICE_TYPES
-            ],
+            "devicesTotal": value(real_totals, "devices_total"),
+            "devicesBound": value(real_totals, "devices_bound"),
+            "devicesUnbound": value(real_totals, "devices_unbound"),
+            "devicesOnline": value(real_totals, "devices_online"),
+            "devicesOffline": value(real_totals, "devices_offline"),
+            "devicesByType": type_items(type_stats),
             "registrySummary": {
-                "devicesTotal": connection.execute("SELECT COUNT(*) AS count FROM device_registry").fetchone()["count"],
-                "devicesBound": connection.execute("SELECT COUNT(*) AS count FROM device_registry WHERE bind_status = 'bound'").fetchone()["count"],
-                "devicesOnline": connection.execute("SELECT COUNT(*) AS count FROM device_registry WHERE online = 1").fetchone()["count"],
+                "devicesTotal": value(registry_totals, "devices_total"),
+                "devicesBound": value(registry_totals, "devices_bound"),
+                "devicesUnbound": value(registry_totals, "devices_unbound"),
+                "devicesOnline": value(registry_totals, "devices_online"),
+                "devicesOffline": value(registry_totals, "devices_offline"),
+                "devicesByType": type_items(registry_type_stats),
             },
             "seedInventory": {
                 "usersTotal": connection.execute(
@@ -1469,29 +1545,12 @@ def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
                 ).fetchone()["count"],
                 "boundOnlineOwnerPhone": SEED_BOUND_ONLINE_PHONE,
                 "boundOfflineOwnerPhone": SEED_BOUND_OFFLINE_PHONE,
-                "devicesTotal": connection.execute(
-                    f"SELECT COUNT(*) AS count FROM device_registry WHERE mock_scenario IN ({seed_scenario_marks})",
-                    seed_scenario_params,
-                ).fetchone()["count"],
-                "devicesBound": connection.execute(
-                    f"SELECT COUNT(*) AS count FROM device_registry WHERE bind_status = 'bound' AND mock_scenario IN ({seed_scenario_marks})",
-                    seed_scenario_params,
-                ).fetchone()["count"],
-                "devicesOnline": connection.execute(
-                    f"SELECT COUNT(*) AS count FROM device_registry WHERE online = 1 AND mock_scenario IN ({seed_scenario_marks})",
-                    seed_scenario_params,
-                ).fetchone()["count"],
-                "devicesByType": [
-                    {
-                        "typeCode": type_info["code"],
-                        "deviceType": type_info["value"],
-                        "typeLabel": type_info["label"],
-                        "totalCount": (seed_type_stats.get(type_info["code"]) or {}).get("total_count", 0),
-                        "boundCount": (seed_type_stats.get(type_info["code"]) or {}).get("bound_count", 0) or 0,
-                        "onlineCount": (seed_type_stats.get(type_info["code"]) or {}).get("online_count", 0) or 0,
-                    }
-                    for type_info in DEVICE_TYPES
-                ],
+                "devicesTotal": value(seed_totals, "devices_total"),
+                "devicesBound": value(seed_totals, "devices_bound"),
+                "devicesUnbound": value(seed_totals, "devices_unbound"),
+                "devicesOnline": value(seed_totals, "devices_online"),
+                "devicesOffline": value(seed_totals, "devices_offline"),
+                "devicesByType": type_items(seed_type_stats),
             },
             "bindAttempts24h": connection.execute("SELECT COUNT(*) AS count FROM device_bind_attempts WHERE created_at >= ?", (last_24h,)).fetchone()["count"],
             "bindFailures24h": connection.execute(
@@ -1510,6 +1569,91 @@ def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
         }
         record_admin_event(connection, data, "admin.overview", "system", None, "success")
         return ok(overview)
+
+
+def admin_devices_search(data: dict[str, Any]) -> dict[str, Any]:
+    forbidden = require_admin(data)
+    if forbidden:
+        return forbidden
+    limit = read_limit(data, default=50, maximum=200)
+    type_code = (data.get("typeCode") or "").strip().upper()
+    device_type = (data.get("deviceType") or data.get("type") or "").strip().lower()
+    bind_status = (data.get("bindStatus") or "").strip().lower()
+    status = (data.get("status") or "").strip().lower()
+    online = parse_admin_online_filter(data.get("online"))
+
+    valid_type_codes = {item["code"] for item in DEVICE_TYPES}
+    valid_device_types = {item["value"] for item in DEVICE_TYPES}
+    if type_code and type_code not in valid_type_codes:
+        return fail("INVALID_TYPE_CODE", "设备类型码不正确")
+    if device_type and device_type not in valid_device_types:
+        return fail("INVALID_DEVICE_TYPE", "设备类型不正确")
+    if bind_status and bind_status not in {"bound", "unbound"}:
+        return fail("INVALID_BIND_STATUS", "绑定状态不正确")
+    if status and status not in {"produced", "registered", "disabled"}:
+        return fail("INVALID_DEVICE_STATUS", "设备状态不正确")
+    if online == "invalid":
+        return fail("INVALID_ONLINE_STATUS", "在线状态不正确")
+
+    where_clauses = ["1 = 1"]
+    params: list[Any] = []
+    if type_code:
+        where_clauses.append("type_code = ?")
+        params.append(type_code)
+    if device_type:
+        where_clauses.append("device_type = ?")
+        params.append(device_type)
+    if bind_status:
+        where_clauses.append("bind_status = ?")
+        params.append(bind_status)
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    if online is not None:
+        where_clauses.append("online = ?")
+        params.append(online)
+    where_sql = " AND ".join(where_clauses)
+
+    with db() as connection:
+        total_matched = connection.execute(
+            f"SELECT COUNT(*) AS count FROM device_registry WHERE {where_sql}",
+            params,
+        ).fetchone()["count"]
+        device_rows = rows_to_dicts(
+            connection.execute(
+                f"""
+                SELECT * FROM device_registry
+                WHERE {where_sql}
+                ORDER BY type_code, serial
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        )
+        record_admin_event(
+            connection,
+            data,
+            "admin.devices.search",
+            "device",
+            type_code or device_type or bind_status or status or "all",
+            "success",
+            detail={"totalMatched": total_matched, "limit": limit},
+        )
+        return ok(
+            {
+                "filters": {
+                    "typeCode": type_code,
+                    "deviceType": device_type,
+                    "bindStatus": bind_status,
+                    "status": status,
+                    "online": online,
+                },
+                "totalMatched": total_matched,
+                "returnedCount": len(device_rows),
+                "limit": limit,
+                "devices": [admin_device_payload(connection, row) for row in device_rows],
+            }
+        )
 
 
 def admin_user_find_by_phone(data: dict[str, Any]) -> dict[str, Any]:
@@ -1942,6 +2086,7 @@ HANDLERS = {
     "watering.startManual": watering_start_manual,
     "watering.stopManual": watering_stop_manual,
     "admin.overview": admin_overview,
+    "admin.devices.search": admin_devices_search,
     "admin.user.findByPhone": admin_user_find_by_phone,
     "admin.user.findByOpenid": admin_user_find_by_openid,
     "admin.device.findByNo": admin_device_find_by_no,

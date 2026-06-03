@@ -85,6 +85,7 @@ curl -X POST https://api.yutingsmarthome.xin/api \
 - `watering.startManual`
 - `watering.stopManual`
 - `admin.overview`
+- `admin.devices.search`
 - `admin.user.findByPhone`
 - `admin.user.findByOpenid`
 - `admin.device.findByNo`
@@ -163,8 +164,8 @@ curl -X POST http://127.0.0.1:8000/api \
 - `data.usersTotal`：真实用户数，不包含服务端预置的测试绑定用户。
 - `data.devicesBound`：真实用户已绑定设备数。
 - `data.devicesOnline`：真实用户已绑定设备中的在线设备数。
-- `data.devicesByType`：按设备类型统计真实用户绑定设备，每项包含 `typeCode`、`typeLabel`、`totalCount`、`boundCount`、`onlineCount`。
-- `data.registrySummary`：完整 `device_registry` 台账统计，包含开发版预置测试设备。
+- `data.devicesByType`：按设备类型统计真实用户绑定设备，每项包含 `typeCode`、`typeLabel`、`totalCount`、`boundCount`、`unboundCount`、`onlineCount`、`offlineCount`。
+- `data.registrySummary`：完整 `device_registry` 台账统计，包含开发版预置测试设备；用于查看在售未绑定 `unbound` 设备数量。
 - `data.seedInventory`：开发版预置测试台账统计。
 
 开发版会预置 500 台测试设备和 2 个测试绑定用户，用于验证绑定、离线和已绑定场景。已绑定在线测试设备默认归属 `11111111111`，已绑定离线测试设备默认归属 `00000000000`。如果总览里看到完整台账是 500 台，这是测试台账，不等同于真实运营设备数。
