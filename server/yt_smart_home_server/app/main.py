@@ -78,6 +78,16 @@ def health() -> dict[str, Any]:
     return ok({"service": "yt_smart_home_server", "status": "healthy"})
 
 
+@app.get("/api")
+def api_info() -> dict[str, Any]:
+    return ok({
+        "service": "yt_smart_home_server",
+        "message": "Yunting Smart Home API endpoint. Use POST /api with JSON body.",
+        "method": "POST",
+        "requestShape": {"type": "api.type", "data": {}},
+    })
+
+
 @app.post("/api")
 def api(api_request: ApiRequest, request: Request) -> dict[str, Any]:
     started_at = time.perf_counter()

@@ -10,7 +10,7 @@
 - 联调阶段：小程序使用 `http` 模式，请求开发机、测试服务器或内网穿透后的服务地址。
 - 上线阶段：小程序使用 `http` 模式请求正式 HTTPS 域名，或使用 `cloud` 模式调用微信云函数。
 
-当前测试环境已经切到 `http` 模式，实际请求地址为 `https://api.yutingsmarthome.xin/api`。该域名通过 Nginx 反向代理到服务器本机 FastAPI 服务 `127.0.0.1:8000`。
+当前测试环境已经切到 `http` 模式，实际请求地址为 `https://yutingsmarthome.xin/api`。根域名通过 Nginx 将 `/api` 精确反向代理到服务器本机 FastAPI 服务 `127.0.0.1:8000`，其余路径继续返回静态展示网站。
 
 当前代码已提供统一配置入口：`miniprogram/config/api.js`。
 
@@ -49,17 +49,29 @@
 
 | 类型码 | 流水号范围 | 场景 |
 | --- | --- | --- |
-| `AW`/`ES`/`LC`/`SP`/`GW` | `00000` - `00031` | 已上线销售、未绑定、在线，可绑定并管理 |
-| `AW`/`ES`/`LC`/`SP`/`GW` | `00032` - `0004A` | 已上线销售、已被其他账号绑定、在线，绑定失败并提示“设备已被绑定” |
-| `AW`/`ES`/`LC`/`SP`/`GW` | `0004B` - `00063` | 已上线销售、已绑定、离线，Mock 允许导入到当前账号用于测试离线只读 |
+| `AW`/`ES`/`LC`/`SP`/`GW` | `00000` - `00031` | 已上线销售、未绑定、在线，可进入配置流程 |
+| `AW`/`ES`/`LC`/`SP`/`GW` | `00032` - `0004A` | 已上线销售、已被其他账号绑定、在线，配置前检查失败并提示“设备已被绑定” |
+| `AW`/`ES`/`LC`/`SP`/`GW` | `0004B` - `00063` | 已上线销售、已绑定、离线，用于管理员和离线只读测试 |
 
-`00000` - `00063` 是十六进制流水号范围，共 100 台。Mock 中 `0004B` - `00063` 的导入行为仅用于手机端测试；真实云端应通过 `device.list` 返回当前账号已绑定设备，不应允许用户绑定已属于他人的设备。
+`00000` - `00063` 是十六进制流水号范围，共 100 台。真实云端应通过 `device.list` 返回当前账号已绑定设备，不应允许用户绑定已属于他人的设备。
 
 ### 3.2 `http` 模式
 
 用于自建服务器。小程序通过 `wx.request` 调用后端统一入口。
 
-当前约定请求格式：
+配置前归属检查请求格式：
+
+```json
+{
+  "type": "device.prepareConfigure",
+  "data": {
+    "phone": "13800138000",
+    "deviceNo": "YT-AW-00000-A324"
+  }
+}
+```
+
+设备完成 BLE 配网并连接云端后的最终绑定请求格式：
 
 ```json
 {
@@ -67,7 +79,9 @@
   "data": {
     "phone": "13800138000",
     "deviceNo": "YT-AW-00000-A324",
-    "deviceName": "阳台自动浇水"
+    "deviceName": "阳台自动浇水",
+    "provisioned": true,
+    "provisionSource": "ble-wifi"
   }
 }
 ```
@@ -120,11 +134,11 @@
 ```js
 const API_CONFIG = {
   mode: "http",
-  baseUrl: "https://api.yutingsmarthome.xin",
-  useDebugHttp: true,
+  baseUrl: "https://yutingsmarthome.xin",
+  useDebugHttp: false,
   debugHttpBaseUrl: "http://39.97.237.214:8000",
   debugHttpDevtoolsOnly: true,
-  useDevtoolsTunnel: true,
+  useDevtoolsTunnel: false,
   devtoolsBaseUrl: "http://127.0.0.1:18000",
   useDevelopHttpFallback: false,
   developBaseUrl: "http://39.97.237.214:8000",
@@ -146,9 +160,10 @@ const API_CONFIG = {
 
 当前真机测试必须同时满足：
 
-- `baseUrl` 使用 `https://api.yutingsmarthome.xin`，不能使用裸 IP 或 HTTP。
-- 微信公众平台的小程序后台已把 `https://api.yutingsmarthome.xin` 加入 request 合法域名。
-- 服务器 Nginx 已配置有效 HTTPS 证书，并把请求反向代理到 `127.0.0.1:8000`。
+- `baseUrl` 使用 `https://yutingsmarthome.xin`，最终请求为 `https://yutingsmarthome.xin/api`，不能使用裸 IP 或 HTTP。
+- 微信公众平台的小程序后台已把 `https://yutingsmarthome.xin` 加入 request 合法域名。
+- 服务器 Nginx 已配置有效 HTTPS 证书，并把根域名 `/api` 精确反向代理到 `127.0.0.1:8000/api`。
+- 浏览器直接访问 `GET https://yutingsmarthome.xin/api` 会返回 API 说明 JSON；小程序业务请求必须使用 `POST /api` 和 `{ type, data }` 请求体。
 
 如果手机预览/开发版仍出现 `request:fail net::ERR_CONNECTION_RESET`，可以临时开启 `useDevelopHttpFallback`。此时需要确保当前包是开发版，并在调试设置中允许开发阶段不校验合法域名和 HTTPS 证书限制；否则会出现 `url not in domain list:39.97.237.214`。体验版和正式版不能依赖这个开关。
 
@@ -161,15 +176,17 @@ const API_CONFIG = {
 | 鉴权 | `auth.sendCode` | 发送短信验证码，限制频率 |
 | 鉴权 | `auth.loginByCode` | 校验验证码，创建登录会话 |
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
-| 设备 | `device.bind` | 绑定设备到当前用户 |
+| 设备 | `device.prepareConfigure` | 配置设备前检查设备号、设备归属和是否允许进入配网 |
+| 设备 | `device.bind` | 设备配网成功并连接云端后，绑定设备到当前用户 |
 | 设备 | `device.unbind` | 当前用户解除设备绑定并清理该设备在当前账号下的数据 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.getStatus` | 查询设备在线状态和传感器数据 |
+| 设备配网 | `deviceProvision.report` | 设备连接云端后上报配网结果、在线状态和认证结果 |
 | 浇水 | `watering.saveConfig` | 保存浇水模式并生成设备同步指令 |
 | 浇水 | `watering.startManual` | 下发手动浇水指令 |
 | 浇水 | `watering.stopManual` | 下发停止手动浇水指令 |
 
-后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。`device.bind` 只有在后端确认或创建用户、成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
+后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网；随后通过 BLE 给设备下发 Wi-Fi 信息，等待设备连接云端并完成认证；`device.bind` 只有在后端确认设备已经上云、配网会话有效、设备未被其他用户绑定，并成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
 
 `device.unbind` 必须要求当前用户拥有该设备。解除绑定前，手机端需要明确提示用户：解除绑定后，该设备的配置和本地数据会从当前账号删除。只有后端成功清理设备归属、配置、缓存状态和解绑审计记录后，手机端才从本地列表移除设备。
 
@@ -216,9 +233,9 @@ const API_CONFIG = {
 | 环境 | `mode` | `baseUrl`/云函数 | 用途 |
 | --- | --- | --- | --- |
 | 本地原型 | `mock` | 不使用 | 页面和流程开发 |
-| 开发者工具联调 | `http` | `http://127.0.0.1:18000` | 通过 SSH 隧道绕过本机 HTTPS reset |
-| 手机开发版联调 | `http` | `http://39.97.237.214:8000` | 仅用于 HTTPS reset 排障期 |
-| 联调测试 | `http` | `https://api.yutingsmarthome.xin` | 真机测试、后端联调 |
+| 开发者工具联调 | `http` | `http://127.0.0.1:18000` | 通过 SSH 隧道排障，仅限本地调试 |
+| 手机开发版联调 | `http` | `http://39.97.237.214:8000` | 仅用于真机调试且关闭合法域名校验时排障 |
+| 联调测试 | `http` | `https://yutingsmarthome.xin` | 真机测试、后端联调，最终请求 `/api` |
 | 正式发布 | `http` 或 `cloud` | 正式 HTTPS 域名或正式云环境 | 用户使用 |
 
 如果使用自建服务器，推荐尽早用域名和 HTTPS 联调，而不是长期依赖 IP。这样可以更接近真实发布环境，也能提前发现微信合法域名、证书、跨环境配置等问题。

@@ -1081,6 +1081,79 @@ def record_bind_event(connection, device_no: str, user_id: str | None, event_typ
     )
 
 
+def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
+    input_device_no = data.get("deviceNo") or ""
+    normalized_device_no = normalize_device_no(input_device_no)
+    with db() as connection:
+        locked = bind_locked_response(connection, data, input_device_no, normalized_device_no)
+        if locked:
+            return locked
+
+        parsed = parse_device_no(input_device_no)
+        if not parsed or parsed["serialNumber"] > 0x00063:
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                normalized_device_no,
+                "failed",
+                "DEVICE_NOT_BINDABLE",
+                "设备号不正确",
+                "prepare_invalid_or_not_produced",
+            )
+            return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确")
+
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+
+        device = get_device(connection, parsed["deviceNo"])
+        if not device or device["status"] != "registered":
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                parsed["deviceNo"],
+                "failed",
+                "DEVICE_NOT_BINDABLE",
+                "设备号不正确",
+                "prepare_not_registered",
+                user,
+            )
+            return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确", user)
+
+        if device["bind_status"] == "bound":
+            if device["owner_user_id"] == user["id"]:
+                return fail("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", {"device": device_payload(device, user["phone"])})
+            if device["owner_user_id"] or device["mock_scenario"] == "sale-bound-online":
+                record_bind_attempt(
+                    connection,
+                    data,
+                    input_device_no,
+                    device["device_no"],
+                    "failed",
+                    "DEVICE_ALREADY_BOUND",
+                    "设备已被绑定",
+                    "prepare_bound_by_other",
+                    user,
+                )
+                return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
+
+        return ok(
+            {
+                "deviceNo": device["device_no"],
+                "deviceSerial": device["serial"],
+                "deviceTypeCode": device["type_code"],
+                "type": device["device_type"],
+                "typeLabel": device["type_label"],
+                "bindStatus": device["bind_status"],
+                "bleNamePrefix": "ytsh-",
+                "needBleProvision": True,
+            },
+            "设备可以配置",
+        )
+
+
 def device_bind(data: dict[str, Any]) -> dict[str, Any]:
     input_device_no = data.get("deviceNo") or ""
     normalized_device_no = normalize_device_no(input_device_no)
@@ -1116,19 +1189,23 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
             )
             return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确")
 
-        user, response = resolve_user(connection, data, create_if_missing=True)
-        if not response["success"] or not user:
+        if not data.get("provisioned"):
             record_bind_attempt(
                 connection,
                 data,
                 input_device_no,
                 parsed["deviceNo"],
                 "failed",
-                response["code"],
-                response["message"],
-                response["code"].lower(),
+                "DEVICE_PROVISION_REQUIRED",
+                "请先完成设备配置",
+                "provision_required",
             )
-            return fail_with_bind_risk(connection, data, response["code"], response["message"])
+            return fail("DEVICE_PROVISION_REQUIRED", "请先完成设备配置")
+
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+
         device = get_device(connection, parsed["deviceNo"])
         if not device or device["status"] != "registered":
             record_bind_event(connection, parsed["deviceNo"], user["id"], "bind", "failed", "not_registered")
@@ -1144,6 +1221,7 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
                 user,
             )
             return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确", user)
+
         if device["bind_status"] == "bound":
             if device["owner_user_id"] == user["id"]:
                 record_bind_attempt(connection, data, input_device_no, device["device_no"], "success", "OK", "绑定成功", "already_owned", user)
@@ -1161,7 +1239,8 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
                     "bound_by_other",
                     user,
                 )
-                return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定", user)
+                return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
+
         current_time = now_ms()
         name = (data.get("deviceName") or "").strip() or device["type_label"]
         config_json = device["config_json"] or json_dumps(default_watering_config() if device["device_type"] == "watering" else {})
@@ -2078,6 +2157,7 @@ HANDLERS = {
     "auth.logout": auth_logout,
     "auth.bindWechat": auth_bind_wechat,
     "user.getProfile": user_get_profile,
+    "device.prepareConfigure": device_prepare_configure,
     "device.bind": device_bind,
     "device.unbind": device_unbind,
     "device.list": device_list,

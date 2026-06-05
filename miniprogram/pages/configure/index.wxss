@@ -1,0 +1,399 @@
+page {
+  min-height: 100%;
+  background: #f6faf9;
+  color: #18231f;
+  font-family: PingFang SC, Helvetica Neue, Arial, sans-serif;
+}
+
+.configure-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 24rpx 24rpx 56rpx;
+}
+
+.hero-card,
+.panel,
+.help-card {
+  box-sizing: border-box;
+  border: 1rpx solid #dcecee;
+  border-radius: 18rpx;
+  background: #fff;
+  padding: 28rpx;
+  margin-bottom: 22rpx;
+  box-shadow: 0 14rpx 34rpx rgba(10, 80, 94, 0.06);
+}
+
+.page-kicker {
+  color: #087d91;
+  font-size: 24rpx;
+  font-weight: 600;
+  line-height: 32rpx;
+}
+
+.page-title {
+  margin-top: 6rpx;
+  font-size: 44rpx;
+  font-weight: 700;
+  line-height: 58rpx;
+}
+
+.page-subtitle,
+.section-subtitle {
+  margin-top: 6rpx;
+  color: #72817b;
+  font-size: 25rpx;
+  line-height: 36rpx;
+}
+
+.section-title {
+  color: #1e2a25;
+  font-size: 32rpx;
+  font-weight: 600;
+  line-height: 44rpx;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  min-height: 96rpx;
+  border-bottom: 1rpx solid #edf2ef;
+}
+
+.form-label {
+  width: 160rpx;
+  color: #63726c;
+  font-size: 26rpx;
+}
+
+.form-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  color: #18231f;
+  font-size: 28rpx;
+}
+
+.scan-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 104rpx;
+  height: 56rpx;
+  margin-left: 14rpx;
+  border-radius: 28rpx;
+  background: #e7f7f7;
+  color: #087d91;
+  font-size: 25rpx;
+  font-weight: 600;
+}
+
+.device-tip,
+.wifi-card {
+  margin-top: 18rpx;
+  border: 1rpx solid #d7ecec;
+  border-radius: 14rpx;
+  background: #f2fbfb;
+  color: #38666d;
+  font-size: 25rpx;
+  line-height: 38rpx;
+  padding: 18rpx;
+}
+
+.primary-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 82rpx;
+  margin-top: 24rpx;
+  box-sizing: border-box;
+  border-radius: 12rpx;
+  background: #087d91;
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 12rpx 22rpx rgba(8, 125, 145, 0.18);
+}
+
+.step-list {
+  margin-top: 20rpx;
+}
+
+.step-item {
+  display: flex;
+  column-gap: 18rpx;
+  padding: 16rpx 0;
+}
+
+.step-dot {
+  width: 22rpx;
+  height: 22rpx;
+  margin-top: 8rpx;
+  border-radius: 50%;
+  background: #cfd9d5;
+}
+
+.step-item.active .step-dot {
+  background: #087d91;
+  box-shadow: 0 0 0 8rpx rgba(8, 125, 145, 0.12);
+}
+
+.step-item.done .step-dot {
+  background: #37a35b;
+}
+
+.step-item.error .step-dot {
+  background: #c2573d;
+}
+
+.step-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-title {
+  color: #22302b;
+  font-size: 27rpx;
+  font-weight: 600;
+  line-height: 38rpx;
+}
+
+.step-desc {
+  color: #72817b;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.status-message {
+  margin-top: 18rpx;
+  border-radius: 12rpx;
+  padding: 18rpx;
+  font-size: 25rpx;
+  line-height: 36rpx;
+}
+
+.status-message.info {
+  background: #edf8fa;
+  color: #087d91;
+}
+
+.status-message.error {
+  background: #fff1ed;
+  color: #a23e2b;
+}
+
+.status-message.success {
+  background: #eef9f1;
+  color: #237a3f;
+}
+
+.action-panel {
+  border-color: #cce9ec;
+  background: #f6fcfc;
+}
+
+.secondary-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 76rpx;
+  margin-top: 18rpx;
+  border: 1rpx solid #b8dee3;
+  border-radius: 12rpx;
+  background: #e7f7f7;
+  color: #087d91;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.modal-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 36rpx;
+  background: rgba(8, 22, 26, 0.48);
+}
+
+.dialog-card {
+  width: 100%;
+  max-height: 82vh;
+  box-sizing: border-box;
+  border-radius: 24rpx;
+  background: #fff;
+  padding: 32rpx;
+  box-shadow: 0 28rpx 70rpx rgba(0, 0, 0, 0.18);
+}
+
+.dialog-title {
+  color: #17231f;
+  font-size: 34rpx;
+  font-weight: 700;
+  line-height: 46rpx;
+}
+
+.dialog-subtitle {
+  margin-top: 8rpx;
+  color: #72817b;
+  font-size: 25rpx;
+  line-height: 36rpx;
+}
+
+.dialog-list {
+  max-height: 540rpx;
+  margin-top: 18rpx;
+}
+
+.dialog-ble-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 112rpx;
+  border-bottom: 1rpx solid #edf2ef;
+}
+
+.dialog-ble-main {
+  flex: 1;
+  min-width: 0;
+  padding-right: 16rpx;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  column-gap: 18rpx;
+  margin-top: 28rpx;
+}
+
+.dialog-actions.two .dialog-button {
+  flex: 1;
+}
+
+.dialog-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 168rpx;
+  height: 76rpx;
+  box-sizing: border-box;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.dialog-button.primary {
+  background: #087d91;
+  color: #fff;
+}
+
+.dialog-button.secondary {
+  border: 1rpx solid #cfe2e5;
+  background: #f7fbfb;
+  color: #566762;
+}
+
+.dialog-form-row {
+  margin-top: 12rpx;
+}
+
+.wifi-password-block {
+  margin-top: 22rpx;
+}
+
+.wifi-password-label {
+  color: #384640;
+  font-size: 26rpx;
+  font-weight: 600;
+  line-height: 36rpx;
+  margin-bottom: 12rpx;
+}
+
+.password-input-wrap {
+  display: flex;
+  align-items: center;
+  min-height: 88rpx;
+  box-sizing: border-box;
+  border: 2rpx solid #087d91;
+  border-radius: 14rpx;
+  background: #f8ffff;
+  padding: 0 14rpx 0 22rpx;
+  box-shadow: 0 0 0 6rpx rgba(8, 125, 145, 0.08);
+}
+
+.password-input {
+  flex: 1;
+  min-width: 0;
+  height: 82rpx;
+  color: #18231f;
+  font-size: 30rpx;
+  line-height: 82rpx;
+}
+
+.password-placeholder {
+  color: #9aa9a3;
+}
+
+.password-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 72rpx;
+  height: 64rpx;
+  margin-left: 10rpx;
+  border-radius: 32rpx;
+  background: #e7f7f7;
+  color: #087d91;
+  font-size: 34rpx;
+  line-height: 1;
+}
+
+.ble-name {
+  color: #1f2c27;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.ble-id,
+.ble-rssi {
+  margin-top: 4rpx;
+  color: #72817b;
+  font-size: 23rpx;
+}
+
+.wifi-label {
+  color: #72817b;
+  font-size: 24rpx;
+}
+
+.wifi-name {
+  margin-top: 4rpx;
+  color: #18231f;
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+.help-card {
+  background: #fbfdfc;
+}
+
+.help-title {
+  color: #1e2a25;
+  font-size: 28rpx;
+  font-weight: 600;
+  margin-bottom: 10rpx;
+}
+
+.help-text {
+  color: #65736e;
+  font-size: 24rpx;
+  line-height: 36rpx;
+  margin-top: 8rpx;
+}

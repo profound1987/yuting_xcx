@@ -8,7 +8,7 @@
 - 用户通过手机号验证码登录成功后，下次打开是否还需要再次登录。
 - 云端服务器如何承载登录、设备、浇水配置、设备指令和设备状态等业务。
 
-本设计支持微信云开发和自建 HTTPS 后端两种实现方式。当前测试环境采用微信小程序 + 自建 FastAPI 服务端，公网入口为 `https://api.yutingsmarthome.xin`，由 Nginx 负责 HTTPS 证书、HTTP 到 HTTPS 跳转和反向代理，后端 FastAPI 服务运行在服务器本机 `127.0.0.1:8000`。小程序端负责交互和本地会话缓存，云端负责身份校验、权限判断、数据持久化和设备通信。任何涉及用户身份、设备归属、控制指令的最终判断都应在云端完成。
+本设计支持微信云开发和自建 HTTPS 后端两种实现方式。当前测试环境采用微信小程序 + 自建 FastAPI 服务端，公网入口为 `https://yutingsmarthome.xin/api`，由 Nginx 在根域名上将 `/api` 精确反向代理到后端，其余路径继续作为展示网站，后端 FastAPI 服务运行在服务器本机 `127.0.0.1:8000`。小程序端负责交互和本地会话缓存，云端负责身份校验、权限判断、数据持久化和设备通信。任何涉及用户身份、设备归属、控制指令的最终判断都应在云端完成。
 
 登录模块的详细规范见 [login-module-design.md](login-module-design.md)。后续手机端和云端实现登录、验证码、会话、账号复用时，应以该文档为准。
 
@@ -24,8 +24,8 @@
 
 ```text
 微信小程序
-  -> https://api.yutingsmarthome.xin/api
-  -> Nginx 443/80
+  -> https://yutingsmarthome.xin/api
+  -> Nginx 443/80（根域名 /api 精确代理）
   -> http://127.0.0.1:8000
   -> FastAPI / SQLite
   -> 阿里云号码认证服务 Dypnsapi.SendSmsVerifyCode
@@ -36,14 +36,15 @@
 | 项目 | 当前值 |
 | --- | --- |
 | 小程序 API 模式 | `http` |
-| API 域名 | `https://api.yutingsmarthome.xin` |
-| Nginx 反代目标 | `http://127.0.0.1:8000` |
+| API 域名 | `https://yutingsmarthome.xin` |
+| API 路径 | `/api` |
+| Nginx 反代目标 | `http://127.0.0.1:8000/api` |
 | 短信提供方 | `aliyun_dypns` |
 | 短信接口 | `Dypnsapi.SendSmsVerifyCode` |
 | 开发验证码 | 关闭，`YT_ENABLE_DEV_SMS=false` |
 | 设备台账 | 服务端预置 `00000` - `00063` 测试设备段 |
 
-微信公众平台必须把 `https://api.yutingsmarthome.xin` 配置为 request 合法域名。开发者工具里的“不校验合法域名”只用于本地调试，不能替代小程序后台的合法域名配置。
+微信公众平台必须把 `https://yutingsmarthome.xin` 配置为 request 合法域名。开发者工具里的“不校验合法域名”只用于本地调试，不能替代小程序后台的合法域名配置。浏览器直接访问 `https://yutingsmarthome.xin/api` 会返回 API 说明 JSON；小程序使用 `POST /api` 发送 `{ type, data }` 才会调用真实业务接口。
 
 ## 2. 登录态定义
 
@@ -155,11 +156,13 @@
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
 | 鉴权 | `auth.logout` | 注销当前会话 |
 | 用户 | `user.getProfile` | 获取当前用户资料 |
-| 设备 | `device.bind` | 绑定设备号 |
+| 设备 | `device.prepareConfigure` | 配置设备前检查设备号和绑定归属 |
+| 设备 | `device.bind` | 设备配网成功并上云后完成最终绑定 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.get` | 查询设备详情 |
 | 设备 | `device.getStatus` | 查询单台设备实时/缓存状态 |
 | 设备 | `device.unbind` | 解绑设备 |
+| 设备通信 | `deviceProvision.report` | 接收设备配网/上线结果 |
 | 浇水 | `watering.getConfig` | 获取浇水配置 |
 | 浇水 | `watering.saveConfig` | 保存浇水模式和参数 |
 | 浇水 | `watering.startManual` | 手动开始浇水 |
@@ -268,7 +271,7 @@
 }
 ```
 
-业务规则：设备号唯一。绑定设备时必须校验设备号存在、未被其他用户绑定、设备密钥或出厂绑定码正确。
+业务规则：设备号唯一。配置设备前必须校验设备号存在、未被其他用户绑定且状态允许配置。最终绑定时还必须校验设备已通过 BLE 配网、已连接云端、设备密钥或出厂绑定码/签名正确。
 
 ### 5.5 `watering_configs` 浇水配置集合
 
@@ -372,19 +375,29 @@
 - 如果同一微信 `OPENID` 尝试绑定不同手机号，需要根据产品策略决定是否允许换绑。
 - 用户被禁用后，所有会话校验失败。
 
-### 6.4 设备绑定模块
+### 6.4 设备配置与绑定模块
 
-功能职责：让用户把设备号绑定到自己的账号下。
+功能职责：让用户通过设备号和 BLE 近场配网，把真实设备连接到云端，并在设备上云成功后绑定到自己的账号下。
 
 业务逻辑：
 
 - 用户必须登录。
 - 设备号不能为空，并符合设备号格式。
-- 云端检查设备是否已生产、已注册、未被绑定且状态允许绑定。
-- 云端对设备号格式错误、CRC 错误、类型码错误、未生产、未注册、绑定码错误等情况，统一向手机端返回“设备号不正确”，真实原因只写入内部日志。
-- 云端确认设备已经被其他用户绑定时，向手机端返回 `DEVICE_ALREADY_BOUND`，提示“设备已被绑定”。
-- 推荐要求用户输入设备出厂绑定码或扫描设备二维码，防止仅凭设备号被误绑。
-- 绑定成功后写入 `devices.ownerUserId`，创建设备默认配置。
+- 设备类型由设备号类型码自动推导，不由用户手动选择。
+- 用户需要输入设备名称；如果为空，默认使用设备类型名称。
+- 手机端扫码或输入设备号后，先调用 `device.prepareConfigure` 做归属检查。
+- 云端检查设备是否已生产、已注册、状态允许配置。
+- 云端确认设备已经被其他用户绑定时，向手机端返回 `DEVICE_ALREADY_BOUND`，提示“设备已被绑定，请联系管理员解绑”。
+- 云端确认设备已经属于当前用户时，返回 `DEVICE_ALREADY_OWNED`，提示“该设备已经是你的设备，可在设备管理中查看”。
+- 云端确认设备未绑定后，手机端进入 BLE 配网流程。
+- 设备进入配网模式后广播以 `ytsh-` 开头的蓝牙名称，小程序只展示这类设备。
+- 小程序连接 BLE 设备后，把设备号发送给设备验证，避免用户把 A 设备号配置到 B 设备。
+- 设备号验证通过后，小程序确认手机当前 Wi-Fi，要求用户输入 Wi-Fi 密码，并通过 BLE 下发 SSID、密码和设备号。
+- 设备连接 Wi-Fi 后主动连接云端服务器并完成设备认证。
+- 只有云端确认设备已上云且在线后，小程序才调用 `device.bind` 完成最终绑定。
+- `device.bind` 必须校验设备上云状态、设备认证结果或配网会话，不能只因为用户知道设备号就绑定成功。
+- 绑定成功后写入 `devices.ownerUserId`、用户自定义设备名称，创建设备默认配置和绑定审计记录。
+- 解绑成功后，应提示用户如需让其他账号重新配置，需要在设备端恢复出厂设置或重新进入配网模式。
 
 ### 6.5 设备列表模块
 
@@ -466,7 +479,7 @@
 
 1. 已完成真实鉴权入口：`auth.sendCode`、`auth.loginByCode`、`auth.checkSession`、`auth.logout` 已由 FastAPI 服务端提供，验证码发送走阿里云号码认证服务。
 2. 已完成服务端核心表：`users`、`sms_codes`、`sessions`、`auth_events`、`device_registry`、设备绑定、控制指令和管理员审计相关表已落在 SQLite。
-3. 已完成 HTTPS 统一入口：小程序通过 `https://api.yutingsmarthome.xin/api` 访问服务端，Nginx 反向代理到本机 FastAPI。
+3. 已完成 HTTPS 统一入口：小程序通过 `https://yutingsmarthome.xin/api` 访问服务端，Nginx 在根域名上将 `/api` 精确反向代理到本机 FastAPI。
 
 后续仍需推进：
 

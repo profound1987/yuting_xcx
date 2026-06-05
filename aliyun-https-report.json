@@ -1,0 +1,132 @@
+{
+  "generatedAt": "2026-06-05T10:11:13Z",
+  "target": {
+    "host": "yutingsmarthome.xin",
+    "port": 443,
+    "path": "/api",
+    "explicitIp": ""
+  },
+  "environment": {
+    "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "openssl": "OpenSSL 3.0.18 30 Sep 2025"
+  },
+  "results": [
+    {
+      "name": "DNS resolve yutingsmarthome.xin",
+      "ok": true,
+      "durationMs": 19,
+      "data": {
+        "addresses": [
+          {
+            "family": "IPv4",
+            "ip": "39.97.237.214"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TCP connect 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 45,
+      "data": {
+        "local": "192.168.18.242:58422",
+        "remote": "39.97.237.214:443"
+      }
+    },
+    {
+      "name": "TLS handshake default via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 59,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    },
+    {
+      "name": "TLS handshake TLSv1.2 via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 67,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    },
+    {
+      "name": "TLS handshake TLSv1.3 via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 62,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    },
+    {
+      "name": "HTTPS GET https://yutingsmarthome.xin/ via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 54,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    },
+    {
+      "name": "HTTPS GET https://yutingsmarthome.xin/api via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 57,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    },
+    {
+      "name": "HTTPS POST https://yutingsmarthome.xin/api via 39.97.237.214:443",
+      "ok": false,
+      "durationMs": 73,
+      "data": {},
+      "error": {
+        "type": "ConnectionResetError",
+        "message": "[WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "errno": 10054,
+        "winerror": 10054,
+        "strerror": "远程主机强迫关闭了一个现有的连接。",
+        "traceback": "ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。"
+      }
+    }
+  ],
+  "notes": [
+    "POST test uses auth.checkSession with an invalid diagnostic token; it does not send SMS.",
+    "If TCP succeeds but TLS/HTTPS fails with ConnectionResetError, the reset happens before the application reaches FastAPI.",
+    "If browser access succeeds while this script and WeChat wx.request fail, ask the cloud provider to check HTTPS access policies for non-browser clients and TLS fingerprint filtering."
+  ],
+  "summary": {
+    "total": 8,
+    "failed": 6,
+    "passed": 2
+  }
+}

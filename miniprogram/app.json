@@ -2,6 +2,7 @@
   "pages": [
     "pages/index/index",
     "pages/devices/index",
+    "pages/configure/index",
     "pages/device/index",
     "pages/about/index"
   ],

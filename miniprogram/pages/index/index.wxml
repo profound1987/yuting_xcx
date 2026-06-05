@@ -17,5 +17,9 @@
       <button class="code-button" disabled="{{codeButtonDisabled}}" bindtap="sendCode">{{codeButtonText}}</button>
     </view>
     <button class="login-button {{canLogin ? '' : 'is-disabled'}}" disabled="{{!canLogin || loggingIn}}" bindtap="login">登录</button>
+    <view wx:if="{{showDevLoginBypass}}" class="dev-login-panel">
+      <view class="dev-login-tip">临时调试：绕过短信验证码，仅用于真机 BLE 联调</view>
+      <button class="dev-login-button" bindtap="devLoginBypass">调试登录（{{devLoginPhone}}）</button>
+    </view>
   </view>
 </view>

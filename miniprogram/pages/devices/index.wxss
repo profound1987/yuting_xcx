@@ -164,6 +164,11 @@ page {
   line-height: 1;
 }
 
+.scan-button.inline {
+  flex-shrink: 0;
+  margin-left: 14rpx;
+}
+
 .form-row {
   display: flex;
   align-items: center;
@@ -183,6 +188,16 @@ page {
   height: 72rpx;
   color: #18231f;
   font-size: 28rpx;
+}
+
+.device-hint {
+  margin-top: 18rpx;
+  border-radius: 12rpx;
+  background: #f0faf9;
+  color: #4c6968;
+  font-size: 24rpx;
+  line-height: 36rpx;
+  padding: 16rpx 18rpx;
 }
 
 .picker-row {

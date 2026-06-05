@@ -1,5 +1,5 @@
 const SESSION_KEY = "yuntingSession";
-const { callApi } = require("../../services/apiClient");
+const { callApi, apiConfig, getLastHttpRequestUrl } = require("../../services/apiClient");
 
 function isValidPhone(phone) {
   return /^1\d{10}$/.test(phone);
@@ -11,10 +11,12 @@ function isValidCode(code) {
 
 function getRequestErrorMessage(error) {
   const message = error && (error.errMsg || error.message);
+  const requestUrl = getLastHttpRequestUrl();
+  const urlText = requestUrl ? `\n请求地址：${requestUrl}` : "";
   if (!message) {
-    return "网络请求失败，请检查网络和接口配置";
+    return `网络请求失败，请检查网络和接口配置${urlText}`;
   }
-  return `网络请求失败：${message}`;
+  return `网络请求失败：${message}${urlText}`;
 }
 
 Page({
@@ -27,6 +29,8 @@ Page({
     sendingCode: false,
     loggingIn: false,
     canLogin: false,
+    showDevLoginBypass: !!apiConfig.enableDevLoginBypass,
+    devLoginPhone: apiConfig.devLoginPhone || "13800138000",
   },
 
   onLoad() {
@@ -134,6 +138,38 @@ Page({
       this.countdownTimer = null;
     }
     this.setData({ codeButtonDisabled: false, codeButtonText: "获取验证码" });
+  },
+
+  devLoginBypass() {
+    if (!apiConfig.enableDevLoginBypass) {
+      wx.showToast({ title: "调试登录未开启", icon: "none" });
+      return;
+    }
+
+    const phone = this.data.phone && isValidPhone(this.data.phone)
+      ? this.data.phone
+      : (apiConfig.devLoginPhone || "13800138000");
+    const now = Date.now();
+    wx.setStorageSync(SESSION_KEY, {
+      phone,
+      phoneMasked: phone.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2"),
+      user: {
+        id: `dev_user_${phone}`,
+        phone,
+        status: "active",
+      },
+      authSession: {
+        phone,
+        phoneMasked: phone.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2"),
+        sessionToken: `dev-bypass-${now}`,
+        expiresAt: now + 7 * 24 * 60 * 60 * 1000,
+      },
+      sessionToken: `dev-bypass-${now}`,
+      devBypass: true,
+      loggedInAt: now,
+    });
+    wx.showToast({ title: "已进入调试模式" });
+    wx.redirectTo({ url: "/pages/devices/index" });
   },
 
   async login() {

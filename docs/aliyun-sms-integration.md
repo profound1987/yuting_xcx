@@ -96,13 +96,13 @@ curl http://127.0.0.1:8000/health
 当前测试环境公网入口为 Nginx HTTPS 反向代理：
 
 ```text
-https://api.yutingsmarthome.xin -> http://127.0.0.1:8000
+https://yutingsmarthome.xin/api -> http://127.0.0.1:8000/api
 ```
 
 小程序真机测试必须在微信公众平台配置 request 合法域名：
 
 ```text
-https://api.yutingsmarthome.xin
+https://yutingsmarthome.xin
 ```
 
 ## 3. 验证发送
@@ -118,7 +118,7 @@ curl -X POST http://127.0.0.1:8000/api \
 公网 HTTPS 验证：
 
 ```bash
-curl -X POST https://api.yutingsmarthome.xin/api \
+curl -X POST https://yutingsmarthome.xin/api \
   -H 'Content-Type: application/json' \
   -d '{"type":"auth.sendCode","data":{"phone":"13800138000","scene":"login"}}'
 ```

@@ -31,18 +31,27 @@ function getMiniProgramEnvVersion() {
 }
 
 function getHttpBaseUrl() {
+  const isDevtools = isDevtoolsRuntime();
+
   if (apiConfig.useDebugHttp && apiConfig.debugHttpBaseUrl) {
-    if (!apiConfig.debugHttpDevtoolsOnly || isDevtoolsRuntime()) {
+    if (!apiConfig.debugHttpDevtoolsOnly || isDevtools) {
       return apiConfig.debugHttpBaseUrl;
     }
   }
-  if (apiConfig.useDevtoolsTunnel && isDevtoolsRuntime() && apiConfig.devtoolsBaseUrl) {
+  if (apiConfig.useDevtoolsTunnel && isDevtools && apiConfig.devtoolsBaseUrl) {
     return apiConfig.devtoolsBaseUrl;
+  }
+  if (apiConfig.useDevelopHttpFallback && !isDevtools && apiConfig.developBaseUrl) {
+    return apiConfig.developBaseUrl;
   }
   if (apiConfig.useDevelopHttpFallback && getMiniProgramEnvVersion() === "develop" && apiConfig.developBaseUrl) {
     return apiConfig.developBaseUrl;
   }
   return apiConfig.baseUrl;
+}
+
+function getLastHttpRequestUrl() {
+  return wx.getStorageSync("yuntingLastHttpRequestUrl") || "";
 }
 
 function httpCall(type, data) {
@@ -51,6 +60,7 @@ function httpCall(type, data) {
     return Promise.reject(new Error("API baseUrl is required"));
   }
   const url = `${baseUrl}/api`;
+  wx.setStorageSync("yuntingLastHttpRequestUrl", url);
 
   return new Promise((resolve, reject) => {
     wx.request({
@@ -90,4 +100,5 @@ module.exports = {
   apiConfig,
   callApi,
   getHttpBaseUrl,
+  getLastHttpRequestUrl,
 };

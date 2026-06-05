@@ -23,7 +23,7 @@ const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
 const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
 const CRC32_TABLE = createCrc32Table();
 const DEVICE_NO_ERROR = "设备号不正确";
-const DEVICE_ALREADY_BOUND_ERROR = "设备已被绑定";
+const DEVICE_ALREADY_BOUND_ERROR = "该设备已经是你的设备，可在设备管理中查看";
 
 function createCrc32Table() {
   const table = [];
@@ -61,30 +61,6 @@ function maskPhone(phone) {
 function extractDeviceNo(text) {
   const matched = normalizeDeviceNo(text).match(/YT-[A-Z]{2}-[0-9A-F]{5}-[0-9A-F]{4}/);
   return matched ? matched[0] : "";
-}
-
-function createWateringConfig() {
-  return {
-    mode: "demand",
-    demand: {
-      intervalHours: 4,
-      threshold: 35,
-      durationSeconds: 20,
-    },
-    schedule: {
-      intervalDays: 1,
-      times: 2,
-      durationSeconds: 30,
-    },
-    manual: {
-      durationSeconds: 10,
-    },
-  };
-}
-
-function getDeviceTypeLabel(type) {
-  const matched = DEVICE_TYPES.find((item) => item.value === type);
-  return matched ? matched.label : "未知设备";
 }
 
 function getDeviceTypeByCode(code) {
@@ -142,58 +118,8 @@ function setStoredDevices(phone, devices) {
   wx.setStorageSync(getDevicesKey(phone), devices);
 }
 
-function bindDeviceRemote(phone, deviceNo, deviceName) {
-  return callApi("device.bind", { phone, deviceNo, deviceName });
-}
-
 function unbindDeviceRemote(phone, deviceNo) {
   return callApi("device.unbind", { phone, deviceNo });
-}
-
-function getBindErrorMessage(resp) {
-  if (resp && resp.message) {
-    return resp.message;
-  }
-  if (resp && resp.code === "DEVICE_ALREADY_BOUND") {
-    return DEVICE_ALREADY_BOUND_ERROR;
-  }
-  return DEVICE_NO_ERROR;
-}
-
-function showBindError(resp) {
-  const message = getBindErrorMessage(resp);
-  const isRiskMessage = resp && (resp.code === "DEVICE_BIND_LOCKED" || (resp.data && resp.data.bindRisk));
-  if (isRiskMessage || message.length > 12) {
-    wx.showModal({ title: "绑定失败", content: message, showCancel: false });
-    return;
-  }
-  wx.showToast({ title: message, icon: "none" });
-}
-
-function createDeviceFromRemote(parsed, selectedType, deviceName, remoteDevice) {
-  const now = Date.now();
-  const device = remoteDevice || {};
-  const type = device.type || selectedType.value;
-  return {
-    id: device.id || `device_${now}`,
-    deviceNo: parsed.deviceNo,
-    deviceSerial: device.deviceSerial || parsed.serial,
-    deviceTypeCode: device.deviceTypeCode || parsed.typeCode,
-    name: device.name || deviceName || selectedType.label,
-    ownerPhone: device.ownerPhone || "",
-    type,
-    typeLabel: device.typeLabel || getDeviceTypeLabel(type),
-    status: device.status || "在线",
-    online: device.online !== false,
-    bindStatus: device.bindStatus || "bound",
-    mockScenario: device.mockScenario || "",
-    createdAt: device.createdAt || now,
-    updatedAt: device.updatedAt || now,
-    lastWateringAt: device.lastWateringAt || "--",
-    lastSyncedAt: device.lastSyncedAt || null,
-    syncState: device.syncState || (device.online === false ? "offline" : "synced"),
-    config: type === "watering" ? (device.config || createWateringConfig()) : (device.config || {}),
-  };
 }
 
 Page({
@@ -204,8 +130,6 @@ Page({
     visibleDevices: [],
     filters: FILTERS,
     activeFilter: "all",
-    deviceTypes: DEVICE_TYPES,
-    deviceTypeIndex: 0,
     deviceNo: "",
     deviceName: "",
     deviceCount: 0,
@@ -255,10 +179,6 @@ Page({
     this.setData({ activeFilter: e.currentTarget.dataset.value }, this.applyFilter);
   },
 
-  onTypeChange(e) {
-    this.setData({ deviceTypeIndex: Number(e.detail.value) });
-  },
-
   onDeviceNoInput(e) {
     this.setData({ deviceNo: normalizeDeviceNo(e.detail.value) });
   },
@@ -284,53 +204,35 @@ Page({
           return;
         }
 
-        const deviceTypeIndex = this.data.deviceTypes.findIndex((item) => item.code === parsed.typeCode);
         this.setData({
           deviceNo: parsed.deviceNo,
-          deviceTypeIndex: deviceTypeIndex >= 0 ? deviceTypeIndex : this.data.deviceTypeIndex,
         });
         wx.showToast({ title: "已读取设备号" });
       },
     });
   },
 
-  async bindDevice() {
-    const { deviceNo, deviceName, deviceTypeIndex, deviceTypes } = this.data;
+  configureDevice() {
+    const { deviceNo, deviceName } = this.data;
     const parsed = parseDeviceNo(deviceNo);
     if (!parsed.valid) {
       wx.showToast({ title: parsed.message, icon: "none" });
       return;
     }
 
+    if (!deviceName) {
+      wx.showToast({ title: "请输入设备名称", icon: "none" });
+      return;
+    }
+
     const devices = getStoredDevices(this.data.phone);
     if (devices.some((item) => item.deviceNo === parsed.deviceNo)) {
-      wx.showToast({ title: DEVICE_ALREADY_BOUND_ERROR, icon: "none" });
+      wx.showModal({ title: "设备已存在", content: DEVICE_ALREADY_BOUND_ERROR, showCancel: false });
       return;
     }
 
-    wx.showLoading({ title: "绑定中..." });
-    let bindResp = null;
-    try {
-      bindResp = await bindDeviceRemote(this.data.phone, parsed.deviceNo, deviceName);
-    } catch (error) {
-      bindResp = null;
-    }
-    wx.hideLoading();
-
-    if (!bindResp || !bindResp.success || !bindResp.data || !bindResp.data.device) {
-      showBindError(bindResp);
-      return;
-    }
-
-    const selectedType = parsed.deviceType || deviceTypes[deviceTypeIndex];
-    const device = createDeviceFromRemote(parsed, selectedType, deviceName, bindResp.data.device);
-    device.ownerPhone = this.data.phone;
-
-    devices.unshift(device);
-    setStoredDevices(this.data.phone, devices);
-    this.setData({ deviceNo: "", deviceName: "", deviceTypeIndex: 0 });
-    wx.showToast({ title: "绑定成功" });
-    this.loadDevices();
+    const target = `/pages/configure/index?deviceNo=${encodeURIComponent(parsed.deviceNo)}&deviceName=${encodeURIComponent(deviceName)}`;
+    wx.navigateTo({ url: target });
   },
 
   openDevice(e) {
@@ -347,7 +249,7 @@ Page({
 
     wx.showModal({
       title: "解除绑定",
-      content: "解除绑定后，该设备的配置和本地数据会从当前账号删除，确定解除绑定吗？",
+      content: "解除绑定后，该设备会从当前账号移除。如需让其他账号重新配置，请在设备端恢复出厂设置或重新进入配网模式，确定解除绑定吗？",
       confirmText: "解除绑定",
       confirmColor: "#c2573d",
       success: async (res) => {
@@ -371,8 +273,12 @@ Page({
 
         const devices = getStoredDevices(this.data.phone).filter((item) => item.id !== id);
         setStoredDevices(this.data.phone, devices);
-        wx.showToast({ title: "已解绑" });
         this.loadDevices();
+        wx.showModal({
+          title: "已解绑",
+          content: "设备已从当前账号移除。若要重新配置或给其他账号使用，请先在设备端恢复出厂设置或重新进入配网模式。",
+          showCancel: false,
+        });
       },
     });
   },

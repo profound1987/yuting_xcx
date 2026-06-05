@@ -375,6 +375,45 @@ function checkBindable(data) {
   return success({ bindable });
 }
 
+function prepareConfigure(data) {
+  const phone = data.phone || "";
+  const inputDeviceNo = data.deviceNo || "";
+  const normalizedDeviceNo = normalizeDeviceNo(inputDeviceNo);
+  const locked = bindLockedFailure(phone, inputDeviceNo, normalizedDeviceNo);
+  if (locked) {
+    return locked;
+  }
+
+  const { record } = getRecord(data.deviceNo);
+  if (!record || record.status !== "registered") {
+    return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "DEVICE_NOT_BINDABLE", "设备号不正确", "prepare_not_registered");
+  }
+
+  const user = ensureUser(phone);
+  if (!user) {
+    return failure("USER_REQUIRED", "请先登录");
+  }
+
+  if (record.bindStatus === "bound" && record.ownerPhone === phone) {
+    return failure("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", { device: createDevicePayload(record, record.name) });
+  }
+
+  if ((record.bindStatus === "bound" && record.ownerPhone && record.ownerPhone !== phone) || record.mockScenario === "sale-bound-online") {
+    return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", "prepare_bound_by_other");
+  }
+
+  return success({
+    deviceNo: record.deviceNo,
+    deviceSerial: record.serial,
+    deviceTypeCode: record.typeCode,
+    type: record.type,
+    typeLabel: record.typeLabel,
+    bindStatus: record.bindStatus,
+    bleNamePrefix: "ytsh-",
+    needBleProvision: true,
+  });
+}
+
 function bindDevice(data) {
   const phone = data.phone || "";
   const deviceName = (data.deviceName || "").trim();
@@ -385,11 +424,13 @@ function bindDevice(data) {
     return locked;
   }
 
-  const { registry, record } = getRecord(data.deviceNo);
+  const { record } = getRecord(data.deviceNo);
   if (!record || record.status !== "registered") {
     return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "DEVICE_NOT_BINDABLE", "设备号不正确", "not_registered");
   }
-
+  if (!data.provisioned) {
+    return failure("DEVICE_PROVISION_REQUIRED", "请先完成设备配置");
+  }
   const user = ensureUser(phone);
   if (!user) {
     return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "USER_REQUIRED", "请先登录", "user_required");
@@ -594,6 +635,9 @@ function mockCall(type, data) {
   }
   if (type === "device.checkBindable") {
     return checkBindable(data || {});
+  }
+  if (type === "device.prepareConfigure") {
+    return prepareConfigure(data || {});
   }
   if (type === "device.bind") {
     return bindDevice(data || {});

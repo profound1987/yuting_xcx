@@ -1,0 +1,89 @@
+<view class="configure-page">
+  <view class="hero-card">
+    <view class="page-kicker">云汀智家</view>
+    <view class="page-title">配置设备</view>
+    <view class="page-subtitle">扫码或输入设备号，完成蓝牙配网后再绑定到账号</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">设备信息</view>
+    <view class="form-row">
+      <view class="form-label">设备号</view>
+      <input class="form-input" placeholder="例如 YT-AW-00000-A324" value="{{deviceNo}}" bindinput="onDeviceNoInput" />
+      <view class="scan-button" bindtap="scanDeviceCode">扫码</view>
+    </view>
+    <view class="form-row">
+      <view class="form-label">设备名称</view>
+      <input class="form-input" placeholder="例如 阳台浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
+    </view>
+    <view wx:if="{{parsedDevice.valid}}" class="device-tip">
+      <view>设备类型：{{parsedDevice.deviceType.label}}</view>
+      <view>类型码：{{parsedDevice.typeCode}} · 流水号：{{parsedDevice.serial}}</view>
+    </view>
+    <view class="primary-button" bindtap="startConfigure">开始配置设备</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">配置进度</view>
+    <view class="step-list">
+      <view wx:for="{{steps}}" wx:key="key" class="step-item {{item.status}}">
+        <view class="step-dot"></view>
+        <view class="step-copy">
+          <view class="step-title">{{item.title}}</view>
+          <view class="step-desc">{{item.desc}}</view>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{statusMessage}}" class="status-message {{statusType}}">{{statusMessage}}</view>
+  </view>
+
+  <view wx:if="{{bleDevices.length > 0 && !showBleDeviceDialog && !selectedBleDevice}}" class="panel action-panel">
+    <view class="section-title">已发现可配置设备</view>
+    <view class="section-subtitle">请点击按钮选择要配置的蓝牙设备。</view>
+    <view class="secondary-button" bindtap="reopenBleDeviceDialog">选择蓝牙设备</view>
+  </view>
+
+  <view wx:if="{{showBleDeviceDialog}}" class="modal-mask">
+    <view class="dialog-card">
+      <view class="dialog-title">选择蓝牙设备</view>
+      <view class="dialog-subtitle">请选择要配置的云汀智家设备</view>
+      <scroll-view class="dialog-list" scroll-y="true">
+        <view wx:for="{{bleDevices}}" wx:key="deviceId" class="dialog-ble-item" data-id="{{item.deviceId}}" bindtap="selectBleDevice">
+          <view class="dialog-ble-main">
+            <view class="ble-name">{{item.name}}</view>
+            <view class="ble-id">{{item.deviceId}}</view>
+          </view>
+          <view class="ble-rssi">{{item.RSSI}} dBm</view>
+        </view>
+      </scroll-view>
+    </view>
+  </view>
+
+  <view wx:if="{{showWifiDialog}}" class="modal-mask">
+    <view class="dialog-card wifi-dialog">
+      <view class="dialog-title">连接家庭 Wi‑Fi</view>
+      <view class="dialog-subtitle">已选择 {{selectedBleDevice.name}}，请确认 Wi‑Fi 并输入密码。</view>
+      <view class="wifi-card">
+        <view class="wifi-label">当前 Wi‑Fi</view>
+        <view class="wifi-name">{{wifiSsid || '未获取到 Wi‑Fi 名称'}}</view>
+      </view>
+      <view class="wifi-password-block">
+        <view class="wifi-password-label">Wi‑Fi 密码</view>
+        <view class="password-input-wrap">
+          <input class="password-input" password="{{!wifiPasswordVisible}}" placeholder="请输入 Wi‑Fi 密码" placeholder-class="password-placeholder" value="{{wifiPassword}}" bindinput="onWifiPasswordInput" focus="true" />
+          <view class="password-eye" bindtap="toggleWifiPasswordVisible">{{wifiPasswordVisible ? '🙈' : '👁'}}</view>
+        </view>
+      </view>
+      <view class="dialog-actions two">
+        <view class="dialog-button secondary" bindtap="closeWifiDialog">取消</view>
+        <view class="dialog-button primary" bindtap="sendWifiToDevice">开始配网</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="help-card">
+    <view class="help-title">配网说明</view>
+    <view class="help-text">新设备开机后会自动进入配网模式。旧设备需要恢复出厂设置或长按设备按键进入配网模式，蓝牙名称应以 ytsh- 开头。</view>
+    <view class="help-text">如果设备已绑定到其他账号，请联系管理员解绑。解绑后设备端也需要恢复出厂设置，再重新配置。</view>
+  </view>
+</view>

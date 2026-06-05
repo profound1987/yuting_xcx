@@ -62,8 +62,8 @@
 当前测试环境已接入真实手机号验证码登录：
 
 - 小程序登录页调用统一 API 适配层，`auth.sendCode` 负责发送验证码，`auth.loginByCode` 负责校验验证码并创建会话。
-- API 地址为 `https://api.yutingsmarthome.xin/api`，小程序配置为 `mode: "http"`。
-- 服务端为 FastAPI，Nginx 负责 HTTPS 证书和反向代理。
+- API 地址为 `https://yutingsmarthome.xin/api`，小程序配置为 `mode: "http"`。
+- 服务端为 FastAPI，Nginx 在根域名上将 `/api` 精确反向代理到后端。
 - 短信发送使用阿里云号码认证服务 `Dypnsapi.SendSmsVerifyCode`，服务端配置 `YT_SMS_PROVIDER=aliyun_dypns`。
 - 当前测试服务器关闭开发验证码，`YT_ENABLE_DEV_SMS=false`；生产/测试登录不会返回 `devCode`。
 
@@ -756,7 +756,7 @@ function callAuthedApi(type, data = {}) {
 1. 手机端登录页已经调用 `auth.sendCode` 发送真实短信验证码。
 2. 手机端登录按钮已经调用 `auth.loginByCode` 校验验证码。
 3. 手机端保存服务端返回的 `authSession`、`sessionToken` 和用户信息。
-4. 小程序接口模式已切到 `http`，请求 `https://api.yutingsmarthome.xin/api`。
+4. 小程序接口模式已切到 `http`，请求 `https://yutingsmarthome.xin/api`。
 5. 服务端已建立 `users`、`sms_codes`、`sessions`、`auth_events` 等登录相关表。
 6. 服务端短信配置使用 `aliyun_dypns`，当前测试环境 `YT_ENABLE_DEV_SMS=false`。
 
