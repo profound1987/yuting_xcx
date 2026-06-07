@@ -13,10 +13,14 @@ python .\tools\admin_client\yunting_admin_ui.py
 默认服务器地址是：
 
 ```text
-https://api.yutingsmarthome.xin
+https://yutingsmarthome.xin
 ```
 
+工具会自动把业务请求发送到 `/api`。如果输入框里直接填写 `https://yutingsmarthome.xin/api`，工具也会自动识别，不会重复拼接 `/api`。
+
 打开后填写 `YT_ADMIN_TOKEN` 对应的管理员密钥即可查询。密钥在服务端部署目录的 `.env` 文件中，由 `YT_ADMIN_TOKEN=` 配置。
+
+如果还没有部署新版服务端，`admin.users.search` 会返回 `API_NOT_FOUND`；部署后可在“用户查询 → 列出注册用户”直接查看已注册用户列表。
 
 如果本机访问 HTTPS 出现 `WinError 10054`、`Connection reset by peer` 等 TLS 握手重置问题，可以改用 SSH 隧道模式。先保持以下命令窗口运行：
 
@@ -36,7 +40,7 @@ http://127.0.0.1:18000
 
 - 总览统计：用户数、设备数、绑定数、未绑定数、在线数、离线数、24 小时内绑定失败和控制指令统计。
 - 设备列表筛选：在总览页按设备类型码、绑定状态和在线状态列出设备，例如只看 `AW` 智能浇水设备下的 `unbound` 在线设备。
-- 用户查询：按手机号查询用户、登录会话、绑定设备、绑定失败记录、控制记录；按 OpenID 反查用户。
+- 用户查询：列出已注册用户；按手机号查询用户、登录会话、绑定设备、绑定失败记录、控制记录；按 OpenID 反查用户。
 - 设备查询：按设备号查询设备状态、绑定用户、绑定历史、控制记录和手动浇水汇总。
 - 绑定失败排障：按手机号、设备号、结果、错误码、原因、时间范围查询失败记录。
 - 控制记录：按手机号、设备号、指令类型、状态、时间范围查询设备控制指令。
@@ -45,6 +49,8 @@ http://127.0.0.1:18000
 - 高级调用：手动输入任意 `admin.*` type 和 JSON data。
 
 ## 结果说明
+
+按“列出注册用户”会调用 `admin.users.search`，默认排除预置测试用户，只返回脱敏手机号、状态、创建时间、活跃会话数、绑定设备数和微信绑定数。勾选“返回完整手机号”后才会返回完整手机号，便于管理员做客服排障；该行为会写入 `admin_audit_events`。
 
 按手机号查询用户时，`exists: false` 表示远程服务端数据库里没有这个手机号的用户记录。通常是因为该手机号还没有通过远程后端完成真实短信登录、绑定或资料查询；如果小程序切回 `mock` 模式，本地数据也不会写入远程服务端。
 
@@ -57,7 +63,7 @@ http://127.0.0.1:18000
 如果不想每次手动填默认值，可以在启动前设置：
 
 ```powershell
-$env:YT_ADMIN_BASE_URL = "https://api.yutingsmarthome.xin"
+$env:YT_ADMIN_BASE_URL = "https://yutingsmarthome.xin"
 $env:YT_ADMIN_TOKEN = "你的管理员密钥"
 $env:YT_ADMIN_TIMEOUT = "12"
 python .\tools\admin_client\yunting_admin_ui.py

@@ -1,3 +1,4 @@
+import base64
 import json
 import hashlib
 import hmac
@@ -8,6 +9,11 @@ import urllib.parse
 import urllib.request
 import zlib
 from typing import Any
+
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+except Exception:  # pragma: no cover - dependency may be absent before server requirements are installed
+    AESCCM = None
 
 from .database import db, json_dumps, json_loads, now_ms, row_to_dict
 from .responses import fail, ok
@@ -25,6 +31,7 @@ DEVICE_TYPES = [
 
 DEVICE_NO_PATTERN = re.compile(r"^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$")
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
+DEV_ZERO_DEVICE_KEY_HEX = "0" * 32
 SEED_BOUND_USER_ID = "seed_bound_user"
 SEED_BOUND_ONLINE_USER_ID = "seed_bound_online_user"
 SEED_BOUND_OFFLINE_USER_ID = "seed_bound_offline_user"
@@ -34,6 +41,26 @@ SEED_USER_IDS = (SEED_BOUND_USER_ID, SEED_BOUND_ONLINE_USER_ID, SEED_BOUND_OFFLI
 SEED_DEFAULT_USER_IDS = (SEED_BOUND_ONLINE_USER_ID, SEED_BOUND_OFFLINE_USER_ID)
 SEED_ADMIN_QUERY_PHONES = (SEED_BOUND_ONLINE_PHONE, SEED_BOUND_OFFLINE_PHONE)
 SEED_SCENARIOS = ("sale-unbound-online", "sale-bound-online", "sale-bound-offline")
+PROVISION_SESSION_TTL_MS = 10 * 60 * 1000
+PROVISION_CLIENT_TIMEOUT_MS = 120 * 1000
+PROVISION_POLL_INTERVAL_MS = 2000
+PROVISION_BIND_WINDOW_MS = 2 * 60 * 1000
+PROVISION_WIFI_STATUS_TIMEOUT_MS = 60 * 1000
+SECURE_PROTOCOL_VERSION = 1
+SECURE_ALG = "AES-128-CCM"
+SECURE_TAG_LENGTH = 16
+SECURE_NONCE_LENGTH = 13
+DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 1000
+HEARTBEAT_OFFLINE_MISSED_CYCLES = 2
+MIN_HEARTBEAT_INTERVAL_MS = 10 * 1000
+MAX_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000
+HEARTBEAT_INTERVAL_BY_DEVICE_TYPE = {
+    "watering": 30 * 1000,
+    "sensor": 60 * 1000,
+    "light": 30 * 1000,
+    "socket": 30 * 1000,
+    "gateway": 30 * 1000,
+}
 
 
 def make_id(prefix: str) -> str:
@@ -159,6 +186,43 @@ def create_device_no(type_code: str, serial: str) -> str:
     return f"{body}-{crc_check_code(body)}"
 
 
+def legacy_dev_device_key_hex(device_no: str) -> str:
+    """Legacy development-only deterministic 16-byte key for seeded devices."""
+    return hashlib.sha256(f"yt-dev-device-key:{device_no}".encode("utf-8")).hexdigest()[:32]
+
+
+def dev_device_key_hex(device_no: str) -> str:
+    """Development/test 16-byte key for seeded devices.
+
+    Current BL616CL test firmware uses the default eFuse AES key slot value,
+    which is all zero before production key burning. The test server must use
+    the same all-zero AES-128 key, otherwise AES-CCM authentication fails.
+
+    Production must replace this with encrypted per-device random key material
+    imported from the manufacturing system. This value is never sent to the mini
+    program and must never be used as an MQTT password.
+    """
+    return DEV_ZERO_DEVICE_KEY_HEX
+
+
+def ensure_device_key(connection, device_no: str, current_time: int) -> None:
+    row = connection.execute("SELECT device_key_hex FROM device_keys WHERE device_no = ?", (device_no,)).fetchone()
+    if row:
+        if row["device_key_hex"] == legacy_dev_device_key_hex(device_no):
+            connection.execute(
+                "UPDATE device_keys SET device_key_hex = ?, updated_at = ? WHERE device_no = ?",
+                (dev_device_key_hex(device_no), current_time, device_no),
+            )
+        return
+    connection.execute(
+        """
+        INSERT INTO device_keys(device_no, key_id, device_key_hex, status, created_at, updated_at)
+        VALUES(?, 'k1', ?, 'active', ?, ?)
+        """,
+        (device_no, dev_device_key_hex(device_no), current_time, current_time),
+    )
+
+
 def get_seed_scenario(serial_number: int) -> str:
     if 0x00000 <= serial_number <= 0x00031:
         return "sale-unbound-online"
@@ -204,34 +268,43 @@ def normalize_seed_device_ownership(connection, current_time: int) -> None:
         f"""
         UPDATE device_registry
         SET bind_status = 'unbound', owner_user_id = NULL, online = 1,
-            display_status = '在线', updated_at = ?
+            display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            last_seen_at = COALESCE(last_seen_at, ?), updated_at = ?
         WHERE mock_scenario = 'sale-unbound-online'
           AND owner_user_id IN ({seed_user_marks})
         """,
-        (current_time, *SEED_USER_IDS),
+        (DEFAULT_HEARTBEAT_INTERVAL_MS, current_time, current_time, *SEED_USER_IDS),
     )
     connection.execute(
         f"""
         UPDATE device_registry
         SET bind_status = 'bound', owner_user_id = ?, online = 1,
-            display_status = '在线', updated_at = ?
+            display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            last_seen_at = COALESCE(last_seen_at, ?), updated_at = ?
         WHERE mock_scenario = 'sale-bound-online'
           AND (owner_user_id IS NULL OR owner_user_id IN ({seed_user_marks}))
           AND (owner_user_id IS NULL OR owner_user_id <> ? OR bind_status <> 'bound' OR online <> 1 OR display_status <> '在线')
         """,
-        (SEED_BOUND_ONLINE_USER_ID, current_time, *SEED_USER_IDS, SEED_BOUND_ONLINE_USER_ID),
+        (SEED_BOUND_ONLINE_USER_ID, DEFAULT_HEARTBEAT_INTERVAL_MS, current_time, current_time, *SEED_USER_IDS, SEED_BOUND_ONLINE_USER_ID),
     )
     connection.execute(
         f"""
         UPDATE device_registry
         SET bind_status = 'bound', owner_user_id = ?, online = 0,
-            display_status = '离线', updated_at = ?
+            display_status = '离线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            updated_at = ?
         WHERE mock_scenario = 'sale-bound-offline'
           AND (owner_user_id IS NULL OR owner_user_id IN ({seed_user_marks}))
           AND (owner_user_id IS NULL OR owner_user_id <> ? OR bind_status <> 'bound' OR online <> 0 OR display_status <> '离线')
         """,
-        (SEED_BOUND_OFFLINE_USER_ID, current_time, *SEED_USER_IDS, SEED_BOUND_OFFLINE_USER_ID),
+        (SEED_BOUND_OFFLINE_USER_ID, DEFAULT_HEARTBEAT_INTERVAL_MS, current_time, *SEED_USER_IDS, SEED_BOUND_OFFLINE_USER_ID),
     )
+
+
+def ensure_all_device_keys(connection, current_time: int) -> None:
+    rows = connection.execute("SELECT device_no FROM device_registry").fetchall()
+    for row in rows:
+        ensure_device_key(connection, row["device_no"], current_time)
 
 
 def ensure_seed_data() -> None:
@@ -241,6 +314,7 @@ def ensure_seed_data() -> None:
         row = connection.execute("SELECT COUNT(*) AS count FROM device_registry").fetchone()
         if row and row["count"]:
             normalize_seed_device_ownership(connection, current_time)
+            ensure_all_device_keys(connection, current_time)
             return
 
         for type_info in DEVICE_TYPES:
@@ -257,8 +331,9 @@ def ensure_seed_data() -> None:
                     INSERT INTO device_registry(
                       device_no, type_code, serial, device_type, type_label, name, status,
                       bind_status, online, owner_user_id, mock_scenario, display_status,
-                      config_json, last_watering_at, last_synced_at, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      config_json, last_watering_at, last_synced_at, heartbeat_interval_ms,
+                      last_seen_at, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         device_no,
@@ -276,10 +351,13 @@ def ensure_seed_data() -> None:
                         json_dumps(config),
                         "--",
                         None,
+                        heartbeat_interval_for_device_type(type_info["value"]),
+                        current_time if online else None,
                         current_time,
                         current_time,
                     ),
                 )
+                ensure_device_key(connection, device_no, current_time)
 
 
 def public_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -857,6 +935,15 @@ def admin_device_payload(connection, device: dict[str, Any]) -> dict[str, Any]:
         "lastWateringAt": device["last_watering_at"],
         "lastSyncedAt": device["last_synced_at"],
         "lastSyncedAtText": format_time_ms(device["last_synced_at"]),
+        "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
+        "heartbeatTimeoutMs": heartbeat_timeout_ms(device),
+        "lastHeartbeatAt": device.get("last_heartbeat_at"),
+        "lastHeartbeatAtText": format_time_ms(device.get("last_heartbeat_at")),
+        "lastBootAt": device.get("last_boot_at"),
+        "lastBootAtText": format_time_ms(device.get("last_boot_at")),
+        "lastSeenAt": device.get("last_seen_at"),
+        "lastSeenAtText": format_time_ms(device.get("last_seen_at")),
+        "telemetry": json_loads(device.get("telemetry_json"), {}),
         "boundAt": bound_at,
         "boundAtText": format_time_ms(bound_at),
         "createdAt": device["created_at"],
@@ -1048,6 +1135,12 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "config": json_loads(device["config_json"], {}),
         "lastWateringAt": device["last_watering_at"],
         "lastSyncedAt": device["last_synced_at"],
+        "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
+        "heartbeatTimeoutMs": heartbeat_timeout_ms(device),
+        "lastHeartbeatAt": device.get("last_heartbeat_at"),
+        "lastBootAt": device.get("last_boot_at"),
+        "lastSeenAt": device.get("last_seen_at"),
+        "telemetry": json_loads(device.get("telemetry_json"), {}),
         "syncState": "synced" if device["online"] else "offline",
         "createdAt": device["created_at"],
         "updatedAt": device["updated_at"],
@@ -1079,6 +1172,387 @@ def record_bind_event(connection, device_no: str, user_id: str | None, event_typ
         """,
         (make_id("bind_event"), device_no, user_id, event_type, result, reason, now_ms()),
     )
+
+
+def secure_success(data: Any = None, message: str = "", code: str = "OK") -> dict[str, Any]:
+    response = ok(data, message)
+    response["code"] = code
+    return response
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def secure_aad(device_no: str, key_id: str, msg_type: str, seq: int, ts: int, nonce_b64: str) -> bytes:
+    return "\n".join(
+        [
+            "YTS-SEC/1",
+            SECURE_ALG,
+            device_no,
+            key_id,
+            msg_type,
+            str(seq),
+            str(ts),
+            nonce_b64,
+        ]
+    ).encode("utf-8")
+
+
+def read_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp_heartbeat_interval(value: Any, default: int = DEFAULT_HEARTBEAT_INTERVAL_MS) -> int:
+    interval = read_int(value, default)
+    return max(MIN_HEARTBEAT_INTERVAL_MS, min(interval, MAX_HEARTBEAT_INTERVAL_MS))
+
+
+def heartbeat_interval_for_device_type(device_type: str | None) -> int:
+    return clamp_heartbeat_interval(HEARTBEAT_INTERVAL_BY_DEVICE_TYPE.get(device_type or "", DEFAULT_HEARTBEAT_INTERVAL_MS))
+
+
+def device_heartbeat_interval_ms(device: dict[str, Any] | None) -> int:
+    if not device:
+        return DEFAULT_HEARTBEAT_INTERVAL_MS
+    return clamp_heartbeat_interval(device.get("heartbeat_interval_ms"), heartbeat_interval_for_device_type(device.get("device_type")))
+
+
+def heartbeat_timeout_ms(device: dict[str, Any] | None) -> int:
+    return device_heartbeat_interval_ms(device) * HEARTBEAT_OFFLINE_MISSED_CYCLES
+
+
+def mark_stale_devices_offline(connection, current_time: int | None = None) -> None:
+    ts = current_time or now_ms()
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET online = 0, display_status = '离线', updated_at = ?
+        WHERE online = 1
+          AND last_seen_at IS NOT NULL
+          AND (? - last_seen_at) >= (COALESCE(heartbeat_interval_ms, ?) * ?)
+        """,
+        (ts, ts, DEFAULT_HEARTBEAT_INTERVAL_MS, HEARTBEAT_OFFLINE_MISSED_CYCLES),
+    )
+
+
+def update_device_seen(connection, device_no: str, msg_type: str, payload: dict[str, Any], current_time: int) -> None:
+    if msg_type == "device.status" and payload.get("online") is False:
+        connection.execute(
+            """
+            UPDATE device_registry
+            SET online = 0, display_status = '离线', last_status_at = ?, last_seen_at = ?, updated_at = ?
+            WHERE device_no = ?
+            """,
+            (current_time, current_time, current_time, device_no),
+        )
+        return
+
+    set_parts = ["online = 1", "display_status = '在线'", "last_seen_at = ?", "updated_at = ?"]
+    params: list[Any] = [current_time, current_time]
+    if msg_type == "telemetry.report":
+        set_parts.extend(["last_heartbeat_at = ?", "last_telemetry_at = ?", "telemetry_json = ?"])
+        params.extend([current_time, current_time, json_dumps(payload)])
+    elif msg_type == "device.boot":
+        set_parts.append("last_boot_at = ?")
+        params.append(current_time)
+    elif msg_type == "device.status":
+        set_parts.append("last_status_at = ?")
+        params.append(current_time)
+    params.append(device_no)
+    connection.execute(
+        f"UPDATE device_registry SET {', '.join(set_parts)} WHERE device_no = ?",
+        tuple(params),
+    )
+
+
+def get_device_key(connection, device_no: str, key_id: str) -> dict[str, Any] | None:
+    return row_to_dict(
+        connection.execute(
+            "SELECT * FROM device_keys WHERE device_no = ? AND key_id = ? AND status = 'active'",
+            (device_no, key_id),
+        ).fetchone()
+    )
+
+
+def provision_session_payload(session: dict[str, Any] | None) -> dict[str, Any]:
+    if not session:
+        return {"online": False, "readyToBind": False, "provisionStatus": "not_found"}
+    return {
+        "provisionSessionId": session["id"],
+        "deviceNo": session["device_no"],
+        "provisionStatus": session["status"],
+        "online": bool(session["last_online_at"]),
+        "readyToBind": session["status"] == "ready_to_bind",
+        "expiresAt": session["expires_at"],
+        "readyAt": session["ready_at"],
+        "lastOnlineAt": session["last_online_at"],
+        "authVerified": bool(session["auth_verified"]),
+    }
+
+
+def get_provision_session(connection, session_id: str | None) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    return row_to_dict(connection.execute("SELECT * FROM device_provision_sessions WHERE id = ?", (session_id,)).fetchone())
+
+
+def expire_stale_provision_sessions(connection, current_time: int | None = None) -> None:
+    ts = current_time or now_ms()
+    connection.execute(
+        """
+        UPDATE device_provision_sessions
+        SET status = 'expired', updated_at = ?
+        WHERE status IN ('pending', 'ready_to_bind') AND expires_at < ?
+        """,
+        (ts, ts),
+    )
+
+
+def create_provision_session(connection, user: dict[str, Any], device: dict[str, Any]) -> dict[str, Any]:
+    current_time = now_ms()
+    expire_stale_provision_sessions(connection, current_time)
+    connection.execute(
+        """
+        UPDATE device_provision_sessions
+        SET status = 'expired', updated_at = ?
+        WHERE device_no = ? AND status IN ('pending', 'ready_to_bind')
+        """,
+        (current_time, device["device_no"]),
+    )
+    session = {
+        "id": make_id("ps"),
+        "device_no": device["device_no"],
+        "user_id": user["id"],
+        "status": "pending",
+        "expires_at": current_time + PROVISION_SESSION_TTL_MS,
+        "created_at": current_time,
+        "updated_at": current_time,
+        "ready_at": None,
+        "bound_at": None,
+        "last_online_at": None,
+        "auth_verified": 0,
+        "report_json": "{}",
+        "dev_bypass": 0,
+    }
+    connection.execute(
+        """
+        INSERT INTO device_provision_sessions(
+          id, device_no, user_id, status, expires_at, created_at, updated_at,
+          ready_at, bound_at, last_online_at, auth_verified, report_json, dev_bypass
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, '{}', 0)
+        """,
+        (
+            session["id"],
+            session["device_no"],
+            session["user_id"],
+            session["status"],
+            session["expires_at"],
+            session["created_at"],
+            session["updated_at"],
+        ),
+    )
+    return session
+
+
+def validate_provision_session_for_user(
+    session: dict[str, Any] | None,
+    user: dict[str, Any],
+    device_no: str,
+    current_time: int | None = None,
+) -> dict[str, Any] | None:
+    ts = current_time or now_ms()
+    if not session:
+        return fail("PROVISION_SESSION_NOT_FOUND", "请重新配置设备", provision_session_payload(None))
+    if session["device_no"] != device_no or session["user_id"] != user["id"]:
+        return fail("PROVISION_SESSION_MISMATCH", "请重新配置设备", provision_session_payload(session))
+    if session["status"] == "expired" or ts >= session["expires_at"]:
+        return fail("PROVISION_SESSION_EXPIRED", "配网超时，请重新配置", provision_session_payload({**session, "status": "expired"}))
+    return None
+
+
+def make_secure_response(connection, device_no: str, key_id: str, msg_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    key_row = get_device_key(connection, device_no, key_id)
+    if AESCCM is None or not key_row:
+        return ok(payload)
+    current_time = now_ms()
+    seq = 1
+    nonce = bytes([0x02]) + secrets.token_bytes(8) + seq.to_bytes(4, "big")
+    nonce_b64 = b64url_encode(nonce)
+    plaintext = json_dumps(payload).encode("utf-8")
+    aad = secure_aad(device_no, key_id, msg_type, seq, current_time, nonce_b64)
+    encrypted = AESCCM(bytes.fromhex(key_row["device_key_hex"]), tag_length=SECURE_TAG_LENGTH).encrypt(nonce, plaintext, aad)
+    return ok(
+        {
+            "v": SECURE_PROTOCOL_VERSION,
+            "alg": SECURE_ALG,
+            "deviceNo": device_no,
+            "keyId": key_id,
+            "msgType": msg_type,
+            "seq": seq,
+            "ts": current_time,
+            "nonce": nonce_b64,
+            "ciphertext": b64url_encode(encrypted[:-SECURE_TAG_LENGTH]),
+            "tag": b64url_encode(encrypted[-SECURE_TAG_LENGTH:]),
+        }
+    )
+
+
+def handle_provision_result(connection, device: dict[str, Any], session: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    current_time = now_ms()
+    result = payload.get("result") or "success"
+    if result != "success":
+        current_time = now_ms()
+        code = payload.get("code") or "DEVICE_PROVISION_FAILED"
+        message = payload.get("message") or "设备配网失败"
+        connection.execute(
+            """
+            UPDATE device_provision_sessions
+            SET status = 'failed', updated_at = ?, report_json = ?
+            WHERE id = ?
+            """,
+            (current_time, json_dumps(payload), session["id"]),
+        )
+        return ok(
+            {
+                "accepted": False,
+                "serverTime": current_time,
+                "provisionState": "failed",
+                "nextAction": "retry_wifi",
+                "code": code,
+                "message": message,
+                "provisionSessionId": session["id"],
+                "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
+            },
+            message,
+        )
+
+    connection.execute(
+        """
+        UPDATE device_provision_sessions
+        SET status = 'ready_to_bind', updated_at = ?, ready_at = ?, last_online_at = ?,
+            auth_verified = 1, report_json = ?
+        WHERE id = ?
+        """,
+        (current_time, current_time, current_time, json_dumps(payload), session["id"]),
+    )
+    heartbeat_interval_ms = device_heartbeat_interval_ms(device)
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET online = 1, display_status = '在线', updated_at = ?, last_seen_at = ?,
+            heartbeat_interval_ms = ?
+        WHERE device_no = ?
+        """,
+        (current_time, current_time, heartbeat_interval_ms, device["device_no"]),
+    )
+    return ok(
+        {
+            "accepted": True,
+            "serverTime": current_time,
+            "provisionState": "ready_to_bind",
+            "nextAction": "wait_bind",
+            "heartbeatIntervalMs": heartbeat_interval_ms,
+            "message": "设备已上线，可以绑定",
+        },
+        "设备已上线，可以绑定",
+    )
+
+
+def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
+    if AESCCM is None:
+        return fail("CRYPTO_NOT_CONFIGURED", "服务端未安装 AES-CCM 依赖")
+
+    device_no = normalize_device_no(data.get("deviceNo"))
+    key_id = str(data.get("keyId") or "k1")
+    msg_type = str(data.get("msgType") or "")
+    seq = read_int(data.get("seq"))
+    ts = read_int(data.get("ts"))
+    nonce_b64 = str(data.get("nonce") or "")
+    if data.get("v") != SECURE_PROTOCOL_VERSION or data.get("alg") != SECURE_ALG or not device_no or not msg_type:
+        return fail("INVALID_PROTOCOL", "设备协议版本不支持")
+
+    with db() as connection:
+        device = get_device(connection, device_no)
+        if not device or device["status"] != "registered":
+            return fail("INVALID_DEVICE", "设备号不正确")
+        key_row = get_device_key(connection, device_no, key_id)
+        if not key_row:
+            return fail("DEVICE_KEY_NOT_FOUND", "设备未注册或暂不可用")
+        try:
+            nonce = b64url_decode(nonce_b64)
+            ciphertext = b64url_decode(str(data.get("ciphertext") or ""))
+            tag = b64url_decode(str(data.get("tag") or ""))
+        except Exception:
+            return fail("INVALID_PROTOCOL", "设备安全消息格式错误")
+        if len(nonce) != SECURE_NONCE_LENGTH or len(tag) != SECURE_TAG_LENGTH:
+            return fail("INVALID_PROTOCOL", "设备安全消息格式错误")
+
+        existing_nonce = connection.execute(
+            "SELECT nonce FROM device_message_nonces WHERE device_no = ? AND nonce = ?",
+            (device_no, nonce_b64),
+        ).fetchone()
+        if existing_nonce:
+            return fail("DEVICE_REPLAY_DETECTED", "设备认证失败")
+
+        aad = secure_aad(device_no, key_id, msg_type, seq, ts, nonce_b64)
+        try:
+            plaintext = AESCCM(bytes.fromhex(key_row["device_key_hex"]), tag_length=SECURE_TAG_LENGTH).decrypt(nonce, ciphertext + tag, aad)
+            payload = json.loads(plaintext.decode("utf-8"))
+        except Exception:
+            return fail("DEVICE_AUTH_FAILED", "设备认证失败")
+
+        connection.execute(
+            """
+            INSERT INTO device_message_nonces(device_no, nonce, msg_type, seq, created_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (device_no, nonce_b64, msg_type, seq, now_ms()),
+        )
+
+        if msg_type == "provision.result":
+            session = get_provision_session(connection, payload.get("provisionSessionId"))
+            if not session:
+                return fail("PROVISION_SESSION_NOT_FOUND", "请重新配置设备")
+            if session["device_no"] != device_no:
+                return fail("PROVISION_SESSION_MISMATCH", "请重新配置设备")
+            if session["status"] not in {"pending", "ready_to_bind"} or now_ms() >= session["expires_at"]:
+                return fail("PROVISION_SESSION_EXPIRED", "配网超时，请重新配置")
+            result = handle_provision_result(connection, device, session, payload)
+            if not result.get("success"):
+                return result
+            return make_secure_response(connection, device_no, key_id, "provision.ack", result["data"])
+
+        current_time = now_ms()
+        if msg_type in {"device.boot", "device.status", "telemetry.report"}:
+            update_device_seen(connection, device_no, msg_type, payload, current_time)
+            return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type})
+
+        if msg_type == "error.report":
+            return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type})
+
+        if msg_type == "command.ack":
+            cmd_id = payload.get("cmdId")
+            status = payload.get("status") or "ack"
+            connection.execute(
+                """
+                UPDATE device_commands
+                SET status = ?, ack_at = ?, failed_reason = ?
+                WHERE id = ? AND device_no = ?
+                """,
+                (status, current_time, payload.get("message") or "", cmd_id, device_no),
+            )
+            return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type})
+
+        return fail("INVALID_COMMAND", "不支持的设备消息类型")
 
 
 def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
@@ -1139,6 +1613,7 @@ def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
                 )
                 return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
 
+        session = create_provision_session(connection, user, device)
         return ok(
             {
                 "deviceNo": device["device_no"],
@@ -1149,9 +1624,46 @@ def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
                 "bindStatus": device["bind_status"],
                 "bleNamePrefix": "ytsh-",
                 "needBleProvision": True,
+                "provisionSessionId": session["id"],
+                "expiresAt": session["expires_at"],
+                "pollIntervalMs": PROVISION_POLL_INTERVAL_MS,
+                "timeoutMs": PROVISION_CLIENT_TIMEOUT_MS,
+                "wifiStatusTimeoutMs": PROVISION_WIFI_STATUS_TIMEOUT_MS,
+                "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
             },
             "设备可以配置",
         )
+
+
+def device_check_provision_status(data: dict[str, Any]) -> dict[str, Any]:
+    input_device_no = data.get("deviceNo") or ""
+    parsed = parse_device_no(input_device_no)
+    if not parsed:
+        return fail("DEVICE_NOT_BINDABLE", "设备号不正确")
+
+    with db() as connection:
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+        current_time = now_ms()
+        expire_stale_provision_sessions(connection, current_time)
+        session = get_provision_session(connection, data.get("provisionSessionId"))
+        session_error = validate_provision_session_for_user(session, user, parsed["deviceNo"], current_time)
+        if session_error:
+            if session_error["code"] == "PROVISION_SESSION_EXPIRED":
+                session_error["code"] = "DEVICE_PROVISION_TIMEOUT"
+                session_error["message"] = "设备未上线，请检查网络是否正常"
+            return session_error
+
+        if session["status"] == "ready_to_bind":
+            return secure_success(provision_session_payload(session), "设备已上线，可以绑定", "DEVICE_READY_TO_BIND")
+        if session["status"] == "pending":
+            return secure_success(provision_session_payload(session), "正在等待设备上线", "DEVICE_PROVISION_PENDING")
+        if session["status"] == "bound":
+            return secure_success(provision_session_payload(session), "设备已绑定", "DEVICE_READY_TO_BIND")
+        if session["status"] == "failed":
+            return fail("DEVICE_PROVISION_FAILED", "设备配网失败", provision_session_payload(session))
+        return fail("DEVICE_PROVISION_TIMEOUT", "设备未上线，请检查网络是否正常", provision_session_payload(session))
 
 
 def device_bind(data: dict[str, Any]) -> dict[str, Any]:
@@ -1189,22 +1701,57 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
             )
             return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确")
 
-        if not data.get("provisioned"):
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+
+        current_time = now_ms()
+        expire_stale_provision_sessions(connection, current_time)
+        session = get_provision_session(connection, data.get("provisionSessionId"))
+        session_error = validate_provision_session_for_user(session, user, parsed["deviceNo"], current_time)
+        if session_error:
             record_bind_attempt(
                 connection,
                 data,
                 input_device_no,
                 parsed["deviceNo"],
                 "failed",
-                "DEVICE_PROVISION_REQUIRED",
-                "请先完成设备配置",
-                "provision_required",
+                session_error["code"],
+                session_error["message"],
+                "provision_session_invalid",
+                user,
             )
-            return fail("DEVICE_PROVISION_REQUIRED", "请先完成设备配置")
-
-        user, response = resolve_user(connection, data, create_if_missing=True)
-        if not response["success"] or not user:
-            return response
+            return session_error
+        if session["status"] != "ready_to_bind" or not session["auth_verified"] or not session["last_online_at"]:
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                parsed["deviceNo"],
+                "failed",
+                "DEVICE_NOT_READY_TO_BIND",
+                "设备未上线，请检查网络",
+                "not_ready_to_bind",
+                user,
+            )
+            return fail("DEVICE_NOT_READY_TO_BIND", "设备未上线，请检查网络", provision_session_payload(session))
+        if current_time - int(session["last_online_at"]) > PROVISION_BIND_WINDOW_MS:
+            connection.execute(
+                "UPDATE device_provision_sessions SET status = 'expired', updated_at = ? WHERE id = ?",
+                (current_time, session["id"]),
+            )
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                parsed["deviceNo"],
+                "failed",
+                "DEVICE_PROVISION_TIMEOUT",
+                "设备未上线，请检查网络是否正常",
+                "ready_window_expired",
+                user,
+            )
+            return fail("DEVICE_PROVISION_TIMEOUT", "设备未上线，请检查网络是否正常", provision_session_payload({**session, "status": "expired"}))
 
         device = get_device(connection, parsed["deviceNo"])
         if not device or device["status"] != "registered":
@@ -1241,7 +1788,6 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
                 )
                 return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
 
-        current_time = now_ms()
         name = (data.get("deviceName") or "").strip() or device["type_label"]
         config_json = device["config_json"] or json_dumps(default_watering_config() if device["device_type"] == "watering" else {})
         connection.execute(
@@ -1251,6 +1797,14 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
             WHERE device_no = ?
             """,
             (user["id"], name, config_json, current_time, device["device_no"]),
+        )
+        connection.execute(
+            """
+            UPDATE device_provision_sessions
+            SET status = 'bound', bound_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (current_time, current_time, session["id"]),
         )
         record_bind_event(connection, device["device_no"], user["id"], "bind", "success")
         record_bind_attempt(connection, data, input_device_no, device["device_no"], "success", "OK", "绑定成功", "bound", user)
@@ -1290,6 +1844,7 @@ def device_list(data: dict[str, Any]) -> dict[str, Any]:
         user, response = resolve_user(connection, data)
         if not response["success"] or not user:
             return response
+        mark_stale_devices_offline(connection)
         rows = connection.execute("SELECT * FROM device_registry WHERE owner_user_id = ? ORDER BY updated_at DESC", (user["id"],)).fetchall()
         devices = [device_payload(dict(row), user["phone"]) for row in rows]
         return ok({"devices": devices})
@@ -1301,6 +1856,7 @@ def device_get_status(data: dict[str, Any]) -> dict[str, Any]:
         user, response = resolve_user(connection, data)
         if not response["success"] or not user:
             return response
+        mark_stale_devices_offline(connection)
         device = get_device(connection, device_no)
         if not device:
             return fail("DEVICE_NOT_FOUND", "设备不存在")
@@ -1315,6 +1871,12 @@ def device_get_status(data: dict[str, Any]) -> dict[str, Any]:
                 "config": json_loads(device["config_json"], {}),
                 "lastWateringAt": device["last_watering_at"],
                 "lastSyncedAt": device["last_synced_at"],
+                "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
+                "heartbeatTimeoutMs": heartbeat_timeout_ms(device),
+                "lastHeartbeatAt": device.get("last_heartbeat_at"),
+                "lastBootAt": device.get("last_boot_at"),
+                "lastSeenAt": device.get("last_seen_at"),
+                "telemetry": json_loads(device.get("telemetry_json"), {}),
                 "updatedAt": device["updated_at"],
             }
         )
@@ -1731,6 +2293,82 @@ def admin_devices_search(data: dict[str, Any]) -> dict[str, Any]:
                 "returnedCount": len(device_rows),
                 "limit": limit,
                 "devices": [admin_device_payload(connection, row) for row in device_rows],
+            }
+        )
+
+
+def admin_users_search(data: dict[str, Any]) -> dict[str, Any]:
+    forbidden = require_admin(data)
+    if forbidden:
+        return forbidden
+    limit = read_limit(data, default=50, maximum=200)
+    status = (data.get("status") or "").strip().lower()
+    include_seed_users = bool(data.get("includeSeedUsers"))
+    include_phone = bool(data.get("includePhone"))
+    if status and status not in {"active", "disabled"}:
+        return fail("INVALID_USER_STATUS", "用户状态不正确")
+    since_ms = read_int(data.get("sinceMs"))
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if since_ms:
+        clauses.append("created_at >= ?")
+        params.append(since_ms)
+    if not include_seed_users:
+        clauses.append(f"id NOT IN ({sql_marks(SEED_USER_IDS)})")
+        params.extend(SEED_USER_IDS)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with db() as connection:
+        total_matched = connection.execute(f"SELECT COUNT(*) AS count FROM users {where_sql}", params).fetchone()["count"]
+        user_rows = rows_to_dicts(
+            connection.execute(
+                f"""
+                SELECT
+                  u.*,
+                  (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.status = 'active') AS active_session_count,
+                  (SELECT COUNT(*) FROM device_registry d WHERE d.owner_user_id = u.id) AS bound_device_count,
+                  (SELECT COUNT(*) FROM user_openids o WHERE o.user_id = u.id AND o.status = 'active') AS wechat_binding_count
+                FROM users u
+                {where_sql}
+                ORDER BY u.created_at DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        )
+        users = []
+        for row in user_rows:
+            item = admin_user_payload(row)
+            if include_phone:
+                item["phone"] = row["phone"]
+            item.update(
+                {
+                    "activeSessionCount": row["active_session_count"],
+                    "boundDeviceCount": row["bound_device_count"],
+                    "wechatBindingCount": row["wechat_binding_count"],
+                }
+            )
+            users.append(item)
+        record_admin_event(
+            connection,
+            data,
+            "admin.users.search",
+            "user",
+            "all",
+            "success",
+            detail={"totalMatched": total_matched, "returnedCount": len(users), "includePhone": include_phone},
+        )
+        return ok(
+            {
+                "filters": {"status": status, "includeSeedUsers": include_seed_users, "includePhone": include_phone, "sinceMs": since_ms},
+                "totalMatched": total_matched,
+                "returnedCount": len(users),
+                "limit": limit,
+                "users": users,
             }
         )
 
@@ -2158,6 +2796,8 @@ HANDLERS = {
     "auth.bindWechat": auth_bind_wechat,
     "user.getProfile": user_get_profile,
     "device.prepareConfigure": device_prepare_configure,
+    "device.checkProvisionStatus": device_check_provision_status,
+    "device.secureMessage": device_secure_message,
     "device.bind": device_bind,
     "device.unbind": device_unbind,
     "device.list": device_list,
@@ -2167,6 +2807,7 @@ HANDLERS = {
     "watering.stopManual": watering_stop_manual,
     "admin.overview": admin_overview,
     "admin.devices.search": admin_devices_search,
+    "admin.users.search": admin_users_search,
     "admin.user.findByPhone": admin_user_find_by_phone,
     "admin.user.findByOpenid": admin_user_find_by_openid,
     "admin.device.findByNo": admin_device_find_by_no,

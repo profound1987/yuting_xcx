@@ -67,6 +67,7 @@ https://yutingsmarthome.xin/api
 - 带时间戳访问 `https://yutingsmarthome.xin/api?...` 已返回 API 说明 JSON，说明根域名 `/api` 代理已生效。
 - 2026-06-05 再次验证：微信后台合法域名生效后，手机 `wx.request` 仍报 `request:fail net::ERR_CONNECTION_RESET`；本地 Windows `curl` 访问 `https://yutingsmarthome.xin/api` 也会 reset，但浏览器和服务器本机 SNI 访问正常。该现象说明失败发生在 Nginx 业务日志之前，更像公网接入、备案合规、云侧安全策略或客户端 TLS 指纹兼容问题。
 - 证书链检查：`yutingsmarthome.xin` 证书由 Let's Encrypt 签发，SAN 包含 `DNS:yutingsmarthome.xin` 和 `DNS:www.yutingsmarthome.xin`，证书本身未发现域名不匹配问题。
+- 2026-06-05 22:17 复测：本地 `curl.exe https://yutingsmarthome.xin/api` 已返回 200；`scripts/diagnose_https.py` 最新报告 `aliyun-https-report-latest.json` 显示 DNS、TCP、TLS1.2、TLS1.3、`GET /api`、`POST /api` 全部通过。当前需要重新验证手机微信 `wx.request` 是否也恢复。
 
 ### 2.2 当前 IP fallback
 
@@ -139,23 +140,32 @@ https://yutingsmarthome.xin/api
 
 当前已做：
 
-- 新增 `device.prepareConfigure`，用于配置前检查设备号、生产台账和绑定归属。
-- `device.bind` 增加 `provisioned` 要求，未完成配网会返回 `DEVICE_PROVISION_REQUIRED`。
-- 已部署到测试服务器 `/home/yunting/yt_smart_home_server` 并验证：
-  - `device.prepareConfigure` 对未绑定设备返回 OK。
+- 新增 `device.prepareConfigure`，用于配置前检查设备号、生产台账和绑定归属，并创建有 TTL 的 `provisionSessionId`。
+- 新增 `device.checkProvisionStatus`，小程序配网后轮询设备是否已经认证上线。
+- 新增 `device.secureMessage` 服务端入口，按 `YTS-SEC/1` AES-128-CCM 安全信封接收设备上报；当前测试台账与测试固件 eFuse 默认值对齐，使用 16 字节全 0 AES key，正式环境必须替换为生产烧录的一机一随机密钥。
+- `device.bind` 已改为要求 `provisionSessionId` 对应的配网会话为 `ready_to_bind`，不再接受小程序自报 `provisioned: true` 作为绑定依据。
+- 已部署到测试服务器 `/home/yunting/yt_smart_home_server` 后需要按 [服务器部署 Runbook](server-deployment-runbook.md) 重新验证：
+  - `device.prepareConfigure` 对未绑定设备返回 OK 和 `provisionSessionId`。
+  - 未完成 `device.secureMessage / provision.result` 的设备，`device.checkProvisionStatus` 会保持 pending 或超时。
   - 旧的直接 `device.bind` 会被拒绝。
 
 当前临时点：
 
-- `provisioned: true` 是小程序传入的临时标记，不是真实设备证明。
+- 设备端尚未实现 AES-128-CCM `device.secureMessage`，因此真实设备上云确认仍需设备固件配合。
 
 正式环境必须修正：
 
-1. 新增设备配网上报接口或设备消息消费逻辑，例如 `deviceProvision.report`。
-2. 设备连接云端后，用设备密钥/签名/配网会话 ID 证明真实设备在线。
-3. `device.bind` 必须校验云端保存的设备配网会话，而不是相信小程序传入的 `provisioned: true`。
+1. 设备端实现 `device.secureMessage / provision.result`、`device.boot`、`telemetry.report`、`command.ack` 等标准消息类型。
+2. 设备连接云端后，必须使用 `YTS-SEC/1` AES-128-CCM 安全消息证明真实设备在线：
+   - 每台设备生产烧录 16 字节 AES `deviceKey` 到 eFuse 或安全 key slot。
+   - 设备 CPU 不能读出 `deviceKey`，只能通过硬件 AES 使用。
+   - 服务端按 `deviceNo` + `keyId` 查询加密保存的 `deviceKeyEncrypted`。
+   - 服务端必须通过 AES-128-CCM tag 校验和解密后，才接受 `provision.result`、`device.boot`、遥测和 ACK。
+3. 正式生产环境必须把测试台账的全 0 `device_key_hex` 替换为生产烧录密钥的加密副本。
 4. 绑定成功后写入审计日志，包括用户、设备号、配网会话、设备上线时间和来源。
 5. 解绑后必须提示用户在设备端恢复出厂设置；管理员强制解绑也要进入售后流程。
+
+正式协议文档：`docs/device-cloud-protocol-design.md` 已确定使用 AES-128-CCM，设备端实现必须与标准 AES-CCM 库互通，不能实现自定义 CBC-MAC/CTR 变体。
 
 ## 5. ICP/网站相关遗留问题
 
@@ -212,6 +222,13 @@ https://yutingsmarthome.xin/api
 - [ ] 真实短信验证码发送和登录可用。
 - [ ] BLE UUID 和设备固件协议一致。
 - [ ] Wi-Fi 配网结果来自设备 Notify 或云端真实状态。
-- [ ] `device.bind` 不再接受小程序自报的 `provisioned: true` 作为唯一依据。
+- [ ] 生产系统已为每台设备生成唯一 16 字节 AES `deviceKey` 和 `keyId`。
+- [ ] 设备端已把 `deviceKey` 烧录到 eFuse 或安全 key slot，CPU 不可读。
+- [ ] 服务端已加密保存 `deviceKeyEncrypted`，日志中不输出明文密钥。
+- [ ] 设备端 AES-128-CCM 实现已通过标准库互通测试，nonce 13 字节、tag 16 字节、AAD 规则一致。
+- [ ] 服务端 `device.secureMessage` 已完成 AES-128-CCM tag 校验、解密和 nonce/seq 防重放。
+- [ ] 小程序配网后通过 `device.checkProvisionStatus` 轮询，只有 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。
+- [ ] 云端只有在收到并验证 `provision.result` 后才把配网会话标记为 `ready_to_bind`。
+- [ ] `device.bind` 不再接受小程序自报的 `provisioned: true` 作为依据，必须校验 `provisionSessionId`。
 - [ ] 解绑流程已明确要求设备端恢复出厂设置。
 - [ ] 管理员审计可查询配置、绑定、解绑和失败原因。

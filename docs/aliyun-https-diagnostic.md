@@ -20,6 +20,7 @@ request:fail net::ERR_CONNECTION_RESET
 
 - 2026-06-05：已将该问题提交阿里云工单，等待阿里云排查公网 HTTPS 接入层、备案接入、安全策略或 TLS 指纹兼容问题。
 - 在工单处理完成前，小程序调试优先继续推进 BLE 配网链路；登录和云端检查仍保留临时调试绕过开关。
+- 2026-06-05 22:17 复测：本地 `curl.exe https://yutingsmarthome.xin/api` 已返回 200；`python scripts/diagnose_https.py --output aliyun-https-report-latest.json` 全部 8 项通过，包括 TLS 默认握手、TLS1.2、TLS1.3、`GET /api` 和 `POST /api`。当前等待微信真机 `wx.request` 再次验证。
 
 ## 2. 诊断脚本
 
@@ -63,6 +64,38 @@ POST 请求使用的是：
 该请求不会发送短信，不会产生短信费用，仅用于验证 `POST /api` 是否能到达后端。
 
 ## 4. 当前本地复现结果摘要
+
+### 4.1 最新恢复验证
+
+2026-06-05 22:17 在本地 Windows 环境重新运行：
+
+```bash
+curl.exe -i --connect-timeout 10 https://yutingsmarthome.xin/api
+python scripts/diagnose_https.py --output aliyun-https-report-latest.json
+```
+
+结果摘要：
+
+```text
+[OK] DNS resolve yutingsmarthome.xin
+[OK] TCP connect 39.97.237.214:443
+[OK] TLS handshake default via 39.97.237.214:443
+[OK] TLS handshake TLSv1.2 via 39.97.237.214:443
+[OK] TLS handshake TLSv1.3 via 39.97.237.214:443
+[OK] HTTPS GET https://yutingsmarthome.xin/
+[OK] HTTPS GET https://yutingsmarthome.xin/api
+[OK] HTTPS POST https://yutingsmarthome.xin/api
+```
+
+`POST /api` 返回：
+
+```json
+{"success":false,"code":"SESSION_EXPIRED","message":"登录已过期，请重新登录","data":null}
+```
+
+该响应说明请求已成功到达 FastAPI 业务层，HTTPS 链路在本地命令行客户端上已恢复正常。
+
+### 4.2 历史故障复现
 
 在本地 Windows 环境中运行脚本，结果为：
 

@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 
-DEFAULT_BASE_URL = "https://api.yutingsmarthome.xin"
+DEFAULT_BASE_URL = "https://yutingsmarthome.xin"
 DEFAULT_TIMEOUT_SECONDS = "12"
 SSH_TUNNEL_BASE_URL = "http://127.0.0.1:18000"
 SSH_TUNNEL_COMMAND = "ssh -N -L 18000:127.0.0.1:8000 -i C:\\Users\\THINK\\.ssh\\yunting_dev_ed25519 yunting@39.97.237.214"
@@ -39,6 +39,11 @@ class AdminApiClient:
         self.admin_token = admin_token
         self.timeout_seconds = timeout_seconds
 
+    def api_url(self) -> str:
+        if self.base_url.endswith("/api"):
+            return self.base_url
+        return f"{self.base_url}/api"
+
     def call(self, api_type: str, payload: dict[str, Any] | None = None) -> ApiResult:
         if not self.admin_token:
             raise AdminClientError("请先填写管理员密钥")
@@ -47,7 +52,7 @@ class AdminApiClient:
         return self._post_api(api_type, data)
 
     def health(self) -> ApiResult:
-        url = f"{self.base_url}/health"
+        url = self.api_url()
         started_at = time.perf_counter()
         try:
             with urllib.request.urlopen(url, timeout=self.timeout_seconds) as response:
@@ -67,7 +72,7 @@ class AdminApiClient:
             raise AdminClientError("请求超时") from error
 
     def _post_api(self, api_type: str, data: dict[str, Any]) -> ApiResult:
-        url = f"{self.base_url}/api"
+        url = self.api_url()
         body = json.dumps({"type": api_type, "data": data}, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -216,17 +221,32 @@ class AdminApp(tk.Tk):
     def _build_user_tab(self) -> None:
         frame = self._new_tab("用户查询")
         frame.columnconfigure(1, weight=1)
+        self.users_status_var = tk.StringVar()
+        self.users_since_hours_var = tk.StringVar()
+        self.users_limit_var = tk.StringVar(value="50")
+        self.users_include_seed_var = tk.BooleanVar(value=False)
+        self.users_include_phone_var = tk.BooleanVar(value=False)
         self.user_phone_var = tk.StringVar()
         self.user_limit_var = tk.StringVar(value="20")
         self.user_openid_var = tk.StringVar()
 
-        self._entry_row(frame, 0, "手机号", self.user_phone_var, hint="如 13800138000")
-        self._entry_row(frame, 1, "返回条数", self.user_limit_var, width=12)
-        self._button(frame, "按手机号查询", self.search_user_by_phone).grid(row=2, column=1, sticky="w", pady=(10, 22))
+        ttk.Label(frame, text="列出已注册用户", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        self._combo_row(frame, 1, "用户状态", self.users_status_var, ["", "active", "disabled"])
+        self._entry_row(frame, 2, "最近小时", self.users_since_hours_var, width=12, hint="为空表示不限时间")
+        self._entry_row(frame, 3, "返回条数", self.users_limit_var, width=12)
+        ttk.Checkbutton(frame, text="包含预置测试用户", variable=self.users_include_seed_var).grid(row=4, column=1, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(frame, text="返回完整手机号", variable=self.users_include_phone_var).grid(row=4, column=2, sticky="w", padx=(10, 0), pady=(6, 0))
+        self._button(frame, "列出注册用户", self.search_users).grid(row=5, column=1, sticky="w", pady=(10, 22))
 
-        ttk.Separator(frame).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 18))
-        self._entry_row(frame, 4, "OpenID", self.user_openid_var, hint="用户在关于页复制的 OpenID")
-        self._button(frame, "按 OpenID 查询", self.search_user_by_openid).grid(row=5, column=1, sticky="w", pady=(10, 0))
+        ttk.Separator(frame).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+        ttk.Label(frame, text="按条件精确查询", style="Title.TLabel").grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        self._entry_row(frame, 8, "手机号", self.user_phone_var, hint="如 13800138000")
+        self._entry_row(frame, 9, "返回条数", self.user_limit_var, width=12)
+        self._button(frame, "按手机号查询", self.search_user_by_phone).grid(row=10, column=1, sticky="w", pady=(10, 22))
+
+        ttk.Separator(frame).grid(row=11, column=0, columnspan=3, sticky="ew", pady=(0, 18))
+        self._entry_row(frame, 12, "OpenID", self.user_openid_var, hint="用户在关于页复制的 OpenID")
+        self._button(frame, "按 OpenID 查询", self.search_user_by_openid).grid(row=13, column=1, sticky="w", pady=(10, 0))
 
     def _build_device_tab(self) -> None:
         frame = self._new_tab("设备查询")
@@ -406,7 +426,7 @@ class AdminApp(tk.Tk):
         client = self.make_client(require_token=False)
         if not client:
             return
-        self._run_in_background("健康检查", "GET /health", lambda: client.health())
+        self._run_in_background("健康检查", "GET /api", lambda: client.health())
 
     def run_admin_call(self, title: str, api_type: str, payload: dict[str, Any], confirm_message: str | None = None) -> None:
         if confirm_message and not messagebox.askyesno("确认操作", confirm_message):
@@ -474,6 +494,20 @@ class AdminApp(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.status_var.set("结果已复制")
+
+    def search_users(self) -> None:
+        payload = compact_payload(
+            {
+                "status": self.users_status_var.get(),
+                "limit": self.read_limit(self.users_limit_var, default=50),
+                "sinceMs": self.read_since_ms(self.users_since_hours_var),
+                "includeSeedUsers": self.users_include_seed_var.get(),
+                "includePhone": self.users_include_phone_var.get(),
+            }
+        )
+        if payload is None:
+            return
+        self.run_admin_call("列出注册用户", "admin.users.search", payload)
 
     def search_user_by_phone(self) -> None:
         payload = compact_payload({"phone": self.user_phone_var.get(), "limit": self.read_limit(self.user_limit_var, default=20)})

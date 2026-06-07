@@ -380,6 +380,85 @@ page {
   font-weight: 600;
 }
 
+.wifi-detected-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 18rpx;
+}
+
+.wifi-text-button,
+.wifi-use-detected {
+  flex-shrink: 0;
+  color: #087d91;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.wifi-empty {
+  margin-top: 8rpx;
+}
+
+.wifi-empty-title {
+  color: #a15a1f;
+  font-size: 28rpx;
+  font-weight: 600;
+  line-height: 40rpx;
+}
+
+.wifi-empty-desc {
+  margin-top: 6rpx;
+  color: #63726c;
+  font-size: 24rpx;
+  line-height: 36rpx;
+}
+
+.wifi-choice-row {
+  display: flex;
+  column-gap: 16rpx;
+  margin-top: 16rpx;
+}
+
+.wifi-choice-button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 62rpx;
+  border: 1rpx solid #b8dee3;
+  border-radius: 12rpx;
+  background: #fff;
+  color: #087d91;
+  font-size: 25rpx;
+  font-weight: 600;
+}
+
+.wifi-choice-button.primary {
+  border-color: #087d91;
+  background: #087d91;
+  color: #fff;
+}
+
+.wifi-manual-block {
+  margin-top: 12rpx;
+}
+
+.wifi-ssid-input {
+  height: 76rpx;
+  box-sizing: border-box;
+  border: 2rpx solid #087d91;
+  border-radius: 12rpx;
+  background: #fff;
+  color: #18231f;
+  font-size: 28rpx;
+  padding: 0 18rpx;
+}
+
+.wifi-use-detected {
+  margin-top: 12rpx;
+  line-height: 34rpx;
+}
+
 .help-card {
   background: #fbfdfc;
 }

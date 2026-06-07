@@ -64,8 +64,23 @@
       <view class="dialog-title">连接家庭 Wi‑Fi</view>
       <view class="dialog-subtitle">已选择 {{selectedBleDevice.name}}，请确认 Wi‑Fi 并输入密码。</view>
       <view class="wifi-card">
-        <view class="wifi-label">当前 Wi‑Fi</view>
-        <view class="wifi-name">{{wifiSsid || '未获取到 Wi‑Fi 名称'}}</view>
+        <view class="wifi-label">{{wifiManualMode ? '手动输入 Wi‑Fi 名称' : '当前 Wi‑Fi'}}</view>
+        <view wx:if="{{wifiSsid && !wifiManualMode}}" class="wifi-detected-row">
+          <view class="wifi-name">{{wifiSsid}}</view>
+          <view class="wifi-text-button" bindtap="enableManualWifiInput">手动输入</view>
+        </view>
+        <view wx:if="{{!wifiSsid && !wifiManualMode}}" class="wifi-empty">
+          <view class="wifi-empty-title">未获取到 Wi‑Fi 名称</view>
+          <view class="wifi-empty-desc">请先把手机连接到要给设备使用的同一个 Wi‑Fi，或手动输入 Wi‑Fi 名称。</view>
+          <view class="wifi-choice-row">
+            <view class="wifi-choice-button" bindtap="retryLoadWifiInfo">重新获取</view>
+            <view class="wifi-choice-button primary" bindtap="enableManualWifiInput">手动输入</view>
+          </view>
+        </view>
+        <view wx:if="{{wifiManualMode}}" class="wifi-manual-block">
+          <input class="wifi-ssid-input" placeholder="请输入 Wi‑Fi 名称（SSID）" placeholder-class="password-placeholder" value="{{wifiManualSsid}}" bindinput="onWifiSsidInput" />
+          <view wx:if="{{wifiSsid}}" class="wifi-use-detected" bindtap="useDetectedWifi">使用已获取到的 Wi‑Fi：{{wifiSsid}}</view>
+        </view>
       </view>
       <view class="wifi-password-block">
         <view class="wifi-password-label">Wi‑Fi 密码</view>

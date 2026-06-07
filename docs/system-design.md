@@ -18,6 +18,8 @@
 
 管理员功能、客服排障查询、用户与设备审计、设备控制证据链的详细规范见 [admin-audit-design.md](admin-audit-design.md)。后续后台管理、售后查询、统计分析和高风险管理操作应以该文档为准。
 
+服务端数据库架构、当前 SQLite 多表结构、用户与设备绑定关系、通用设备表和后续设备类型扩展表规划见 [server-database-architecture.md](server-database-architecture.md)。当前实现以“一个服务端数据库 + 多张业务表 + 统一设备台账 `device_registry`”为准，不是每种设备一个独立数据库，也不是一个设备大表。
+
 ## 1.1 当前测试环境
 
 当前已进入真机测试阶段，实际链路为：
@@ -156,19 +158,19 @@
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
 | 鉴权 | `auth.logout` | 注销当前会话 |
 | 用户 | `user.getProfile` | 获取当前用户资料 |
-| 设备 | `device.prepareConfigure` | 配置设备前检查设备号和绑定归属 |
-| 设备 | `device.bind` | 设备配网成功并上云后完成最终绑定 |
+| 设备 | `device.prepareConfigure` | 配置设备前检查设备号和绑定归属，并创建有 TTL 的配网会话 |
+| 设备 | `device.checkProvisionStatus` | 小程序配网后轮询设备是否已通过云端认证上线 |
+| 设备 | `device.bind` | 配网会话为 `ready_to_bind` 后完成最终绑定 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.get` | 查询设备详情 |
 | 设备 | `device.getStatus` | 查询单台设备实时/缓存状态 |
 | 设备 | `device.unbind` | 解绑设备 |
-| 设备通信 | `deviceProvision.report` | 接收设备配网/上线结果 |
+| 设备通信 | `device.secureMessage` | 接收设备 `YTS-SEC/1` AES-128-CCM 安全消息，按 `msgType` 分发入网、遥测、状态和 ACK |
 | 浇水 | `watering.getConfig` | 获取浇水配置 |
 | 浇水 | `watering.saveConfig` | 保存浇水模式和参数 |
 | 浇水 | `watering.startManual` | 手动开始浇水 |
 | 浇水 | `watering.stopManual` | 手动停止浇水 |
-| 设备通信 | `deviceCommand.dispatch` | 生成并下发设备指令 |
-| 设备通信 | `deviceTelemetry.report` | 接收设备状态和传感器数据 |
+| 设备通信 | `deviceCommand.dispatch` | 生成并下发设备指令，payload 必须通过 AES-128-CCM 安全信封下发 |
 
 ### 4.3 统一接口返回
 
@@ -197,6 +199,8 @@
 客户端根据 `code` 做统一处理。遇到 `SESSION_EXPIRED`、`SESSION_REVOKED`、`USER_DISABLED` 时清除本地会话并跳转登录页。
 
 ## 5. 数据模型设计
+
+> 说明：本节保留系统概念层数据模型，便于理解用户、设备、配置、指令和遥测之间的业务关系。当前 FastAPI + SQLite 的落地表结构、字段和后续扩展规划以 [server-database-architecture.md](server-database-architecture.md) 为准。
 
 ### 5.1 `users` 用户集合
 
@@ -258,7 +262,9 @@
 {
   "_id": "device_xxx",
   "deviceNo": "YT-WATER-001",
-  "deviceSecretHash": "hash",
+  "keyId": "k1",
+  "deviceKeyEncrypted": "encrypted_16byte_aes_key",
+  "secureProtocol": "YTS-SEC/1-AES-128-CCM",
   "type": "watering",
   "name": "阳台自动浇水",
   "ownerUserId": "user_xxx",
@@ -266,12 +272,13 @@
   "bindStatus": "bound",
   "boundAt": 1710000000000,
   "lastOnlineAt": 1710000000000,
+  "lastUpNonce": "base64url_nonce",
   "createdAt": 1710000000000,
   "updatedAt": 1710000000000
 }
 ```
 
-业务规则：设备号唯一。配置设备前必须校验设备号存在、未被其他用户绑定且状态允许配置。最终绑定时还必须校验设备已通过 BLE 配网、已连接云端、设备密钥或出厂绑定码/签名正确。
+业务规则：设备号唯一。配置设备前必须校验设备号存在、未被其他用户绑定且状态允许配置。最终绑定时还必须校验设备已通过 BLE 配网、已连接云端、`provision.result` 已通过 `YTS-SEC/1` AES-128-CCM 认证解密，且配网会话状态为 `ready_to_bind`。
 
 ### 5.5 `watering_configs` 浇水配置集合
 
@@ -389,13 +396,15 @@
 - 云端检查设备是否已生产、已注册、状态允许配置。
 - 云端确认设备已经被其他用户绑定时，向手机端返回 `DEVICE_ALREADY_BOUND`，提示“设备已被绑定，请联系管理员解绑”。
 - 云端确认设备已经属于当前用户时，返回 `DEVICE_ALREADY_OWNED`，提示“该设备已经是你的设备，可在设备管理中查看”。
-- 云端确认设备未绑定后，手机端进入 BLE 配网流程。
+- 云端确认设备未绑定后，创建带 TTL 的 `provisionSessionId` 并返回给小程序。
 - 设备进入配网模式后广播以 `ytsh-` 开头的蓝牙名称，小程序只展示这类设备。
 - 小程序连接 BLE 设备后，把设备号发送给设备验证，避免用户把 A 设备号配置到 B 设备。
-- 设备号验证通过后，小程序确认手机当前 Wi-Fi，要求用户输入 Wi-Fi 密码，并通过 BLE 下发 SSID、密码和设备号。
-- 设备连接 Wi-Fi 后主动连接云端服务器并完成设备认证。
-- 只有云端确认设备已上云且在线后，小程序才调用 `device.bind` 完成最终绑定。
-- `device.bind` 必须校验设备上云状态、设备认证结果或配网会话，不能只因为用户知道设备号就绑定成功。
+- 设备号验证通过后，小程序确认手机当前 Wi-Fi，要求用户输入 Wi-Fi 密码，并通过 BLE 下发 SSID、密码、设备号和 `provisionSessionId`。
+- 设备连接 Wi-Fi 后主动连接云端服务器并用 `device.secureMessage` 上报 `provision.result`。
+- 云端完成 AES-128-CCM tag 校验、解密和 nonce/seq 防重放后，把配网会话标记为 `ready_to_bind`。
+- 小程序配网后调用 `device.checkProvisionStatus` 轮询，如果超时仍未上线，提示“设备未上线，请检查网络是否正常”。
+- 只有 `device.checkProvisionStatus` 返回 `DEVICE_READY_TO_BIND` 后，小程序才调用 `device.bind` 完成最终绑定。
+- `device.bind` 必须再次校验设备未被重复绑定、配网会话属于当前用户和设备、会话未过期、状态为 `ready_to_bind`，不能只因为小程序刚刚查询到在线就绑定成功。
 - 绑定成功后写入 `devices.ownerUserId`、用户自定义设备名称，创建设备默认配置和绑定审计记录。
 - 解绑成功后，应提示用户如需让其他账号重新配置，需要在设备端恢复出厂设置或重新进入配网模式。
 
@@ -443,7 +452,7 @@
 
 业务逻辑：
 
-- 设备上报必须使用设备密钥或 IoT 平台签名认证。
+- 设备上报必须使用 `YTS-SEC/1` AES-128-CCM 安全消息，服务端先完成 tag 校验、解密和 nonce/seq 防重放，再接受状态或传感器数据。
 - 云端根据最近上报时间判断在线状态。
 - 土壤湿度数据可用于前端展示，也可用于云端告警。
 - MVP 阶段按需浇水策略可以由设备本地执行；云端负责下发配置和保存状态。
@@ -459,7 +468,7 @@
 
 - `device.list`：返回当前用户设备列表和云端缓存状态，例如 `online`、`lastHeartbeatAt`、最近湿度、电量、水箱状态。
 - `device.getStatus`：进入设备详情页或下拉刷新时调用，返回单台设备最新状态。
-- `deviceTelemetry.report`：设备侧或 IoT 平台调用，上报心跳和传感器数据。
+- `device.secureMessage`：设备侧调用，上报 `YTS-SEC/1` AES-128-CCM 安全消息；服务端按解密后的 `msgType` 处理 `provision.result`、`telemetry.report`、`command.ack` 等业务。
 
 手机端不要直接判断真实在线状态，只展示云端计算后的状态。没有云端前，可以继续使用本地模拟状态，但 UI 上应视为原型展示。
 
@@ -470,7 +479,7 @@
 - 前端不能直接更新 `devices`、`watering_configs`、`device_commands` 等核心集合。
 - 设备控制接口必须校验设备归属。
 - 验证码接口必须限制发送频率和校验次数。
-- 设备绑定必须使用设备号 + 绑定码、二维码签名或出厂密钥，不能只靠设备号。
+- 设备绑定必须使用 `device.prepareConfigure` + BLE 配网 + 设备上云 `provision.result`；`provision.result` 必须通过 `YTS-SEC/1` AES-128-CCM tag 校验和解密，不能只靠设备号或小程序传入的 `provisioned: true`。
 - 会话失效、账号冻结、设备解绑后，相关操作应立即失败。
 
 ## 8. 当前实现状态与后续迁移

@@ -97,7 +97,7 @@ YT-AW-00001-4BF5
 
 设备号末尾的 `CCCC` 用于发现用户手动输入错误、二维码内容损坏、流水号抄错等问题。
 
-该校验码不是安全凭证，不能替代设备密钥、绑定码或云端设备归属校验。客户端内嵌 salt 可以降低用户随意猜号的概率，但小程序前端代码可被分析，不能把它当作安全边界。真正的防冒绑必须依赖云端设备台账、注册状态、绑定状态、设备密钥或二维码签名。
+该校验码不是安全凭证，不能替代设备密钥或云端设备归属校验。客户端内嵌 salt 可以降低用户随意猜号的概率，但小程序前端代码可被分析，不能把它当作安全边界。正式防冒绑必须依赖云端设备台账、注册状态、绑定状态，以及设备通过 `YTS-SEC/1` AES-128-CCM 上报的 `provision.result` 认证结果。
 
 ### 5.2 被校验内容
 
@@ -377,13 +377,13 @@ BLE 配网过程中至少需要覆盖以下结果：
 4. 根据类型码解析设备类型。
 5. 查询设备生产台账或 `device_registry` 集合，确认设备已生产并已注册。
 6. 确认设备未被其他用户绑定。
-7. 校验设备端已经通过 BLE 配网并连接云端，例如最近一次设备上线时间、设备云端会话、配网会话 ID 或设备签名。
-8. 校验设备绑定码、出厂密钥、二维码签名或设备云端认证结果，证明用户实际持有该设备。
+7. 校验设备端已经通过 BLE 配网并连接云端，例如最近一次设备上线时间、设备云端会话和配网会话 ID。
+8. 校验设备通过 `YTS-SEC/1` AES-128-CCM 认证上报的 `provision.result`，证明上报来自真实设备，且配网会话状态为 `ready_to_bind`。
 9. 绑定设备到当前 `userId`，保存用户输入的设备名称。
 10. 创建设备默认配置和绑定审计记录。
 11. 返回绑定后的设备详情。
 
-对手机端的错误返回需要区分用户可理解的业务状态，但不能泄露校验细节。设备号格式错误、CRC 错误、类型码错误、未生产、未注册、绑定码错误等情况，对普通用户统一返回：
+对手机端的错误返回需要区分用户可理解的业务状态，但不能泄露校验细节。设备号格式错误、CRC 错误、类型码错误、未生产、未注册、设备认证失败等情况，对普通用户统一返回：
 
 ```json
 {
@@ -418,9 +418,9 @@ BLE 配网过程中至少需要覆盖以下结果：
 }
 ```
 
-云端内部日志可以记录真实原因，例如 `CRC_MISMATCH`、`TYPE_NOT_SUPPORTED`、`NOT_PRODUCED`、`NOT_REGISTERED`、`BOUND_BY_OTHER_USER`、`DEVICE_NOT_ONLINE`、`PROVISION_SESSION_EXPIRED`，但不要把 CRC 期望值、真实类型码列表、生产台账细节等直接返回给手机端。
+云端内部日志可以记录真实原因，例如 `CRC_MISMATCH`、`TYPE_NOT_SUPPORTED`、`NOT_PRODUCED`、`NOT_REGISTERED`、`BOUND_BY_OTHER_USER`、`DEVICE_NOT_ONLINE`、`PROVISION_SESSION_EXPIRED`、`AES_CCM_AUTH_FAILED`、`REPLAY_DETECTED`，但不要把 CRC 期望值、真实类型码列表、生产台账细节、密钥状态等直接返回给手机端。
 
-只有设备号格式和 CRC32 校验通过，不代表设备一定属于当前用户。正式环境必须结合 BLE 近场连接、设备密钥、绑定码、二维码签名或设备云端认证结果做所有权确认。
+只有设备号格式和 CRC32 校验通过，不代表设备一定属于当前用户。正式环境必须结合 BLE 近场连接、云端配网会话，以及设备 `YTS-SEC/1` AES-128-CCM 认证结果做所有权确认。
 
 ### 8.1 `device_registry` 生产台账建议
 
@@ -430,6 +430,9 @@ BLE 配网过程中至少需要覆盖以下结果：
   "deviceNo": "YT-AW-00001-4BF5",
   "typeCode": "AW",
   "serial": "00001",
+  "keyId": "k1",
+  "deviceKeyEncrypted": "encrypted_16byte_aes_key",
+  "secureProtocol": "YTS-SEC/1-AES-128-CCM",
   "status": "registered",
   "bindStatus": "unbound",
   "online": true,
@@ -483,14 +486,13 @@ Mock 模式会在本地模拟上述流程：在线设备保存成功后，参数
 7. 写入生产台账。
 8. 打印到设备铭牌、包装盒和二维码。
 
-设备铭牌建议同时展示：
+设备铭牌建议展示：
 
 ```text
 设备号: YT-AW-00001-4BF5
-绑定码: 8 位随机码或二维码签名
 ```
 
-其中设备号用于识别设备，绑定码或二维码签名用于证明用户确实持有设备。
+其中设备号用于识别设备和进入配置流程，不是安全凭证。用户实际持有设备的证明来自 BLE 近场配网，以及设备连接云端后使用 eFuse 16 字节 AES `deviceKey` 生成的 `YTS-SEC/1` AES-128-CCM 认证上报。二维码可以只包含设备号和产品信息，不应包含设备密钥。
 
 ## 11. 当前小程序实现状态
 
@@ -513,4 +515,4 @@ Mock 模式会在本地模拟上述流程：在线设备保存成功后，参数
 - 设备离线时，详情页进入只读状态，不能编辑参数、保存配置或下发浇水指令。
 - 解除绑定前会提示用户设备端需要恢复出厂设置或重新进入配网模式；确认后调用 `device.unbind`，成功后才从当前账号设备列表移除。
 
-当前小程序已切到 HTTPS 自建后端测试环境，API 入口为 `https://yutingsmarthome.xin/api`。根域名的 `/api` 由 Nginx 精确反向代理到 FastAPI，浏览器直接访问会返回 API 说明 JSON，小程序使用 `POST /api` 调用真实业务接口。服务端必须复用本文档规则再次校验设备号，并逐步把当前测试用的 `provisioned: true` 替换为真实设备云端会话、配网会话 ID、设备签名或设备密钥校验。当前小程序已通过统一 API 适配层调用 `device.prepareConfigure`、`device.bind`、`device.unbind`、`device.getStatus`、`watering.saveConfig`、`watering.startManual`、`watering.stopManual` 等接口；`mock` 模式仍保留，用于本地页面和流程回归测试。
+当前小程序已切到 HTTPS 自建后端测试环境，API 入口为 `https://yutingsmarthome.xin/api`。根域名的 `/api` 由 Nginx 精确反向代理到 FastAPI，浏览器直接访问会返回 API 说明 JSON，小程序使用 `POST /api` 调用真实业务接口。服务端必须复用本文档规则再次校验设备号；当前正式流程已调整为 `device.prepareConfigure` 创建 `provisionSessionId`、小程序 BLE 下发该会话、设备通过 `device.secureMessage / provision.result` 完成 AES-128-CCM 认证上线、小程序轮询 `device.checkProvisionStatus`，最后 `device.bind` 只接受服务端已确认的 `ready_to_bind` 配网会话。当前小程序已通过统一 API 适配层调用 `device.prepareConfigure`、`device.checkProvisionStatus`、`device.bind`、`device.unbind`、`device.getStatus`、`watering.saveConfig`、`watering.startManual`、`watering.stopManual` 等接口；`mock` 模式仍保留，用于本地页面和流程回归测试。

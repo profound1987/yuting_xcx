@@ -156,8 +156,16 @@ Page({
     return true;
   },
 
-  loadDevices() {
-    const devices = getStoredDevices(this.data.phone);
+  async loadDevices() {
+    let devices = getStoredDevices(this.data.phone);
+    try {
+      const resp = await callApi("device.list", { phone: this.data.phone });
+      if (resp && resp.success && resp.data && Array.isArray(resp.data.devices)) {
+        devices = resp.data.devices;
+        setStoredDevices(this.data.phone, devices);
+      }
+    } catch (error) {}
+
     const onlineCount = devices.filter((item) => item.online !== false && item.status !== "离线").length;
     this.setData({
       devices,

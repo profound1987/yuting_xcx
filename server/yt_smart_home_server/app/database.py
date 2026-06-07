@@ -133,12 +133,62 @@ CREATE TABLE IF NOT EXISTS device_registry (
   config_json TEXT NOT NULL,
   last_watering_at TEXT NOT NULL,
   last_synced_at INTEGER,
+  heartbeat_interval_ms INTEGER NOT NULL DEFAULT 30000,
+  last_heartbeat_at INTEGER,
+  last_boot_at INTEGER,
+  last_status_at INTEGER,
+  last_seen_at INTEGER,
+  last_telemetry_at INTEGER,
+  telemetry_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(owner_user_id) REFERENCES users(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_owner ON device_registry(owner_user_id);
+
+CREATE TABLE IF NOT EXISTS device_keys (
+  device_no TEXT PRIMARY KEY,
+  key_id TEXT NOT NULL,
+  device_key_hex TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(device_no) REFERENCES device_registry(device_no)
+);
+
+CREATE TABLE IF NOT EXISTS device_provision_sessions (
+  id TEXT PRIMARY KEY,
+  device_no TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  ready_at INTEGER,
+  bound_at INTEGER,
+  last_online_at INTEGER,
+  auth_verified INTEGER NOT NULL DEFAULT 0,
+  report_json TEXT NOT NULL DEFAULT '{}',
+  dev_bypass INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(device_no) REFERENCES device_registry(device_no),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provision_sessions_device ON device_provision_sessions(device_no, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_provision_sessions_user ON device_provision_sessions(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_provision_sessions_expires ON device_provision_sessions(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS device_message_nonces (
+  device_no TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  msg_type TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(device_no, nonce)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_message_nonces_created ON device_message_nonces(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS device_bind_events (
   id TEXT PRIMARY KEY,
@@ -211,6 +261,27 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON admin_audit_events(target_t
 """
 
 
+def column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def add_column_if_missing(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if column not in column_names(connection, table):
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def apply_migrations(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "device_registry", "heartbeat_interval_ms", "INTEGER NOT NULL DEFAULT 30000")
+    add_column_if_missing(connection, "device_registry", "last_heartbeat_at", "INTEGER")
+    add_column_if_missing(connection, "device_registry", "last_boot_at", "INTEGER")
+    add_column_if_missing(connection, "device_registry", "last_status_at", "INTEGER")
+    add_column_if_missing(connection, "device_registry", "last_seen_at", "INTEGER")
+    add_column_if_missing(connection, "device_registry", "last_telemetry_at", "INTEGER")
+    add_column_if_missing(connection, "device_registry", "telemetry_json", "TEXT NOT NULL DEFAULT '{}'")
+
+
 def init_db() -> None:
     with db() as connection:
         connection.executescript(SCHEMA)
+        apply_migrations(connection)

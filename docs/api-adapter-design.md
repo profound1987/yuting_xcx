@@ -176,17 +176,18 @@ const API_CONFIG = {
 | 鉴权 | `auth.sendCode` | 发送短信验证码，限制频率 |
 | 鉴权 | `auth.loginByCode` | 校验验证码，创建登录会话 |
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
-| 设备 | `device.prepareConfigure` | 配置设备前检查设备号、设备归属和是否允许进入配网 |
+| 设备 | `device.prepareConfigure` | 配置设备前检查设备号、设备归属和是否允许进入配网，并创建临时配网会话 |
+| 设备 | `device.checkProvisionStatus` | 小程序配网后轮询设备是否已通过云端认证上线 |
 | 设备 | `device.bind` | 设备配网成功并连接云端后，绑定设备到当前用户 |
 | 设备 | `device.unbind` | 当前用户解除设备绑定并清理该设备在当前账号下的数据 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.getStatus` | 查询设备在线状态和传感器数据 |
-| 设备配网 | `deviceProvision.report` | 设备连接云端后上报配网结果、在线状态和认证结果 |
+| 设备通信 | `device.secureMessage` | 接收设备 `YTS-SEC/1` AES-128-CCM 安全消息，按 `msgType` 处理 `provision.result`、遥测、ACK |
 | 浇水 | `watering.saveConfig` | 保存浇水模式并生成设备同步指令 |
 | 浇水 | `watering.startManual` | 下发手动浇水指令 |
 | 浇水 | `watering.stopManual` | 下发停止手动浇水指令 |
 
-后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网；随后通过 BLE 给设备下发 Wi-Fi 信息，等待设备连接云端并完成认证；`device.bind` 只有在后端确认设备已经上云、配网会话有效、设备未被其他用户绑定，并成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
+后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网，并取得 `provisionSessionId`；随后通过 BLE 给设备下发 Wi-Fi 信息和 `provisionSessionId`，等待设备连接云端并通过 AES-128-CCM 认证上报 `provision.result`；小程序再调用 `device.checkProvisionStatus` 轮询，只有返回 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。`device.bind` 仍必须在后端再次确认设备已经上云、配网会话有效且状态为 `ready_to_bind`、设备未被其他用户绑定，并成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
 
 `device.unbind` 必须要求当前用户拥有该设备。解除绑定前，手机端需要明确提示用户：解除绑定后，该设备的配置和本地数据会从当前账号删除。只有后端成功清理设备归属、配置、缓存状态和解绑审计记录后，手机端才从本地列表移除设备。
 
@@ -194,7 +195,7 @@ const API_CONFIG = {
 
 | 场景 | 返回码 | 手机端提示 |
 | --- | --- | --- |
-| 格式错误、CRC 错误、类型错误、未生产、未注册、绑定码错误 | `DEVICE_NOT_BINDABLE` | 设备号不正确 |
+| 格式错误、CRC 错误、类型错误、未生产、未注册、设备 AES-CCM 认证失败 | `DEVICE_NOT_BINDABLE` | 设备号不正确 |
 | 设备已被其他用户绑定 | `DEVICE_ALREADY_BOUND` | 设备已被绑定 |
 
 ## 6. 设备配置同步策略

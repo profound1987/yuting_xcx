@@ -1,5 +1,21 @@
+const SESSION_KEY = "yuntingSession";
 const apiConfig = require("../config/api");
 const { mockCall } = require("./mockApi");
+
+function withSessionData(data) {
+  const nextData = Object.assign({}, data || {});
+  try {
+    const session = wx.getStorageSync(SESSION_KEY) || {};
+    const token = session.sessionToken || (session.authSession && session.authSession.sessionToken);
+    if (token && !session.devBypass && !nextData.sessionToken) {
+      nextData.sessionToken = token;
+    }
+    if (session.phone && !nextData.phone) {
+      nextData.phone = session.phone;
+    }
+  } catch (error) {}
+  return nextData;
+}
 
 function cloudCall(type, data) {
   if (!wx.cloud) {
@@ -8,7 +24,7 @@ function cloudCall(type, data) {
 
   return wx.cloud.callFunction({
     name: apiConfig.cloudFunctionName,
-    data: { type, data },
+    data: { type, data: withSessionData(data) },
   }).then((resp) => resp.result);
 }
 
@@ -67,7 +83,7 @@ function httpCall(type, data) {
       url,
       method: "POST",
       timeout: apiConfig.timeout,
-      data: { type, data },
+      data: { type, data: withSessionData(data) },
       header: {
         "content-type": "application/json",
       },
@@ -82,7 +98,7 @@ function httpCall(type, data) {
 
 function callApi(type, data) {
   if (apiConfig.mode === "mock") {
-    return mockCall(type, data);
+    return mockCall(type, withSessionData(data));
   }
 
   if (apiConfig.mode === "cloud") {

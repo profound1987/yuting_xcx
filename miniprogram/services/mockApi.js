@@ -1,6 +1,7 @@
 const MOCK_REGISTRY_KEY = "yuntingMockDeviceRegistryV2";
 const MOCK_USERS_KEY = "yuntingMockUsersV1";
 const MOCK_BIND_ATTEMPTS_KEY = "yuntingMockBindAttemptsV1";
+const MOCK_PROVISION_SESSIONS_KEY = "yuntingMockProvisionSessionsV1";
 const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
 const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
 const BIND_FAILURE_WARNING_THRESHOLD = 3;
@@ -195,6 +196,14 @@ function getBindAttempts() {
   return wx.getStorageSync(MOCK_BIND_ATTEMPTS_KEY) || [];
 }
 
+function getProvisionSessions() {
+  return wx.getStorageSync(MOCK_PROVISION_SESSIONS_KEY) || {};
+}
+
+function setProvisionSessions(sessions) {
+  wx.setStorageSync(MOCK_PROVISION_SESSIONS_KEY, sessions);
+}
+
 function setBindAttempts(attempts) {
   const windowStart = Date.now() - BIND_FAILURE_WINDOW_MS;
   wx.setStorageSync(MOCK_BIND_ATTEMPTS_KEY, attempts.filter((item) => item.createdAt >= windowStart));
@@ -323,6 +332,12 @@ function createDevicePayload(record, name) {
     config: clone(record.config || {}),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
+    heartbeatTimeoutMs: (record.heartbeatIntervalMs || 30000) * 2,
+    lastHeartbeatAt: record.lastHeartbeatAt || null,
+    lastBootAt: record.lastBootAt || null,
+    lastSeenAt: record.lastSeenAt || (record.online ? record.updatedAt : null),
+    telemetry: clone(record.telemetry || {}),
     syncState: record.online ? "synced" : "offline",
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -402,6 +417,21 @@ function prepareConfigure(data) {
     return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", "prepare_bound_by_other");
   }
 
+  const sessions = getProvisionSessions();
+  const now = Date.now();
+  const provisionSessionId = `mock_ps_${now}_${Math.random().toString(16).slice(2)}`;
+  sessions[provisionSessionId] = {
+    id: provisionSessionId,
+    deviceNo: record.deviceNo,
+    phone,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: now + 10 * 60 * 1000,
+    lastOnlineAt: null,
+  };
+  setProvisionSessions(sessions);
+
   return success({
     deviceNo: record.deviceNo,
     deviceSerial: record.serial,
@@ -411,6 +441,70 @@ function prepareConfigure(data) {
     bindStatus: record.bindStatus,
     bleNamePrefix: "ytsh-",
     needBleProvision: true,
+    provisionSessionId,
+    expiresAt: sessions[provisionSessionId].expiresAt,
+    pollIntervalMs: 500,
+    timeoutMs: 10000,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
+    wifiStatusTimeoutMs: 60000,
+  });
+}
+
+function listDevices(data) {
+  const phone = data.phone || "";
+  const registry = getRegistry();
+  const devices = Object.keys(registry)
+    .map((key) => registry[key])
+    .filter((record) => record.ownerPhone === phone && record.bindStatus === "bound")
+    .map((record) => createDevicePayload(record, record.name));
+  return success({ devices });
+}
+
+function checkProvisionStatus(data) {
+  const phone = data.phone || "";
+  const sessions = getProvisionSessions();
+  const session = sessions[data.provisionSessionId];
+  if (!session || session.deviceNo !== normalizeDeviceNo(data.deviceNo) || session.phone !== phone) {
+    return failure("PROVISION_SESSION_NOT_FOUND", "请重新配置设备", {
+      online: false,
+      readyToBind: false,
+      provisionStatus: "not_found",
+    });
+  }
+
+  const now = Date.now();
+  if (now >= session.expiresAt) {
+    session.status = "expired";
+    session.updatedAt = now;
+    sessions[session.id] = session;
+    setProvisionSessions(sessions);
+    return failure("DEVICE_PROVISION_TIMEOUT", "设备未上线，请检查网络是否正常", {
+      online: false,
+      readyToBind: false,
+      provisionStatus: "expired",
+    });
+  }
+
+  if (session.status === "pending") {
+    session.status = "ready_to_bind";
+    session.updatedAt = now;
+    session.lastOnlineAt = now;
+    sessions[session.id] = session;
+    setProvisionSessions(sessions);
+  }
+
+  return Promise.resolve({
+    success: true,
+    code: "DEVICE_READY_TO_BIND",
+    message: "设备已上线，可以绑定",
+    data: {
+      provisionSessionId: session.id,
+      deviceNo: session.deviceNo,
+      online: true,
+      readyToBind: true,
+      provisionStatus: "ready_to_bind",
+      lastOnlineAt: session.lastOnlineAt,
+    },
   });
 }
 
@@ -424,13 +518,20 @@ function bindDevice(data) {
     return locked;
   }
 
-  const { record } = getRecord(data.deviceNo);
+  const { registry, record } = getRecord(data.deviceNo);
   if (!record || record.status !== "registered") {
     return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "DEVICE_NOT_BINDABLE", "设备号不正确", "not_registered");
   }
-  if (!data.provisioned) {
-    return failure("DEVICE_PROVISION_REQUIRED", "请先完成设备配置");
+
+  const sessions = getProvisionSessions();
+  const session = sessions[data.provisionSessionId];
+  if (!session || session.deviceNo !== record.deviceNo || session.phone !== phone) {
+    return failure("PROVISION_SESSION_NOT_FOUND", "请重新配置设备");
   }
+  if (session.status !== "ready_to_bind") {
+    return failure("DEVICE_NOT_READY_TO_BIND", "设备未上线，请检查网络");
+  }
+
   const user = ensureUser(phone);
   if (!user) {
     return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "USER_REQUIRED", "请先登录", "user_required");
@@ -444,13 +545,20 @@ function bindDevice(data) {
     return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定", "bound_by_other");
   }
 
+  const now = Date.now();
   record.bindStatus = "bound";
   record.ownerPhone = phone;
   record.ownerUserId = user.id;
   record.name = deviceName || record.name;
-  record.updatedAt = Date.now();
+  record.updatedAt = now;
   registry[record.deviceNo] = record;
   setRegistry(registry);
+
+  session.status = "bound";
+  session.boundAt = now;
+  session.updatedAt = now;
+  sessions[session.id] = session;
+  setProvisionSessions(sessions);
 
   return success({
     user,
@@ -549,6 +657,12 @@ function getStatus(data) {
     config: clone(record.config || {}),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
+    heartbeatTimeoutMs: (record.heartbeatIntervalMs || 30000) * 2,
+    lastHeartbeatAt: record.lastHeartbeatAt || null,
+    lastBootAt: record.lastBootAt || null,
+    lastSeenAt: record.lastSeenAt || (record.online ? record.updatedAt : null),
+    telemetry: clone(record.telemetry || {}),
     updatedAt: record.updatedAt,
   });
 }
@@ -639,11 +753,17 @@ function mockCall(type, data) {
   if (type === "device.prepareConfigure") {
     return prepareConfigure(data || {});
   }
+  if (type === "device.checkProvisionStatus") {
+    return checkProvisionStatus(data || {});
+  }
   if (type === "device.bind") {
     return bindDevice(data || {});
   }
   if (type === "device.unbind") {
     return unbindDevice(data || {});
+  }
+  if (type === "device.list") {
+    return listDevices(data || {});
   }
   if (type === "device.getStatus") {
     return getStatus(data || {});

@@ -38,16 +38,18 @@ curl -X POST http://127.0.0.1:8000/api \
 当前测试服务器部署在 `/home/yunting/yt_smart_home_server`，公网 API 入口为：
 
 ```text
-https://api.yutingsmarthome.xin
+https://yutingsmarthome.xin/api
 ```
+
+完整部署、重启、验证和回滚步骤见：[服务器部署 Runbook](../../docs/server-deployment-runbook.md)。
 
 请求链路：
 
 ```text
 微信小程序 / 管理员工具
-  -> https://api.yutingsmarthome.xin/api
-  -> Nginx 443/80
-  -> http://127.0.0.1:8000
+  -> https://yutingsmarthome.xin/api
+  -> Nginx 443/80 root site location = /api
+  -> http://127.0.0.1:8000/api
   -> FastAPI / SQLite
 ```
 
@@ -56,18 +58,18 @@ Nginx 负责 HTTPS 证书、HTTP 到 HTTPS 跳转和反向代理。FastAPI/Uvico
 公网健康检查：
 
 ```bash
-curl https://api.yutingsmarthome.xin/health
+curl https://yutingsmarthome.xin/api
 ```
 
 公网统一接口示例：
 
 ```bash
-curl -X POST https://api.yutingsmarthome.xin/api \
+curl -X POST https://yutingsmarthome.xin/api \
   -H 'Content-Type: application/json' \
   -d '{"type":"auth.checkSession","data":{}}'
 ```
 
-证书由 Certbot/Let's Encrypt 签发，证书文件位于 `/etc/letsencrypt/live/api.yutingsmarthome.xin/`，Nginx 站点配置位于 `/etc/nginx/sites-available/yunting-api`。
+证书由 Certbot/Let's Encrypt 签发。当前小程序优先使用根域名 `/api`，API 子域名 `api.yutingsmarthome.xin` 仅作为后续恢复独立 API 域名的备选。
 
 ## 已实现接口
 
@@ -77,6 +79,9 @@ curl -X POST https://api.yutingsmarthome.xin/api \
 - `auth.logout`
 - `auth.bindWechat`
 - `user.getProfile`
+- `device.prepareConfigure`
+- `device.checkProvisionStatus`
+- `device.secureMessage`
 - `device.bind`
 - `device.unbind`
 - `device.list`
@@ -86,6 +91,7 @@ curl -X POST https://api.yutingsmarthome.xin/api \
 - `watering.stopManual`
 - `admin.overview`
 - `admin.devices.search`
+- `admin.users.search`
 - `admin.user.findByPhone`
 - `admin.user.findByOpenid`
 - `admin.device.findByNo`

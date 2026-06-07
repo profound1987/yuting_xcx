@@ -1,0 +1,147 @@
+{
+  "generatedAt": "2026-06-05T14:17:09Z",
+  "target": {
+    "host": "yutingsmarthome.xin",
+    "port": 443,
+    "path": "/api",
+    "explicitIp": ""
+  },
+  "environment": {
+    "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "openssl": "OpenSSL 3.0.18 30 Sep 2025"
+  },
+  "results": [
+    {
+      "name": "DNS resolve yutingsmarthome.xin",
+      "ok": true,
+      "durationMs": 9,
+      "data": {
+        "addresses": [
+          {
+            "family": "IPv4",
+            "ip": "39.97.237.214"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TCP connect 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 34,
+      "data": {
+        "local": "192.168.18.242:54265",
+        "remote": "39.97.237.214:443"
+      }
+    },
+    {
+      "name": "TLS handshake default via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 92,
+      "data": {
+        "serverName": "yutingsmarthome.xin",
+        "tlsVersion": "TLSv1.3",
+        "cipher": [
+          "TLS_AES_256_GCM_SHA384",
+          "TLSv1.3",
+          256
+        ],
+        "certSubject": "commonName=yutingsmarthome.xin",
+        "certIssuer": "countryName=US, organizationName=Let's Encrypt, commonName=YR1",
+        "certNotBefore": "Jun  5 06:29:35 2026 GMT",
+        "certNotAfter": "Sep  3 06:29:34 2026 GMT",
+        "certDnsSAN": [
+          "www.yutingsmarthome.xin",
+          "yutingsmarthome.xin"
+        ]
+      }
+    },
+    {
+      "name": "TLS handshake TLSv1.2 via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 131,
+      "data": {
+        "serverName": "yutingsmarthome.xin",
+        "tlsVersion": "TLSv1.2",
+        "cipher": [
+          "ECDHE-RSA-AES256-GCM-SHA384",
+          "TLSv1.2",
+          256
+        ],
+        "certSubject": "commonName=yutingsmarthome.xin",
+        "certIssuer": "countryName=US, organizationName=Let's Encrypt, commonName=YR1",
+        "certNotBefore": "Jun  5 06:29:35 2026 GMT",
+        "certNotAfter": "Sep  3 06:29:34 2026 GMT",
+        "certDnsSAN": [
+          "www.yutingsmarthome.xin",
+          "yutingsmarthome.xin"
+        ]
+      }
+    },
+    {
+      "name": "TLS handshake TLSv1.3 via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 75,
+      "data": {
+        "serverName": "yutingsmarthome.xin",
+        "tlsVersion": "TLSv1.3",
+        "cipher": [
+          "TLS_AES_256_GCM_SHA384",
+          "TLSv1.3",
+          256
+        ],
+        "certSubject": "commonName=yutingsmarthome.xin",
+        "certIssuer": "countryName=US, organizationName=Let's Encrypt, commonName=YR1",
+        "certNotBefore": "Jun  5 06:29:35 2026 GMT",
+        "certNotAfter": "Sep  3 06:29:34 2026 GMT",
+        "certDnsSAN": [
+          "www.yutingsmarthome.xin",
+          "yutingsmarthome.xin"
+        ]
+      }
+    },
+    {
+      "name": "HTTPS GET https://yutingsmarthome.xin/ via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 167,
+      "data": {
+        "statusLine": "HTTP/1.1 200 OK",
+        "headers": "HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)\r\nDate: Fri, 05 Jun 2026 14:17:09 GMT\r\nContent-Type: text/html\r\nContent-Length: 8902\r\nLast-Modified: Wed, 03 Jun 2026 12:09:48 GMT\r\nConnection: close\r\nETag: \"6a20198c-22c6\"\r\nAccept-Ranges: bytes",
+        "bodyPreview": "<!doctype html>\r\n<html lang=\"zh-CN\">\r\n<head>\r\n  <meta charset=\"utf-8\">\r\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\r\n  <title>云汀智慧家居展示</title>\r\n  <meta name=\"description\" content=\"云汀智慧家居展示用于展示个人智慧家庭设备状态与功能。\">\r\n  <style>\r\n    :root {\r\n      color-scheme: light;\r\n      --ink: #17212b;\r\n      --muted: #637083;\r\n      --line: #dbe4ea;\r\n      --panel: #ffffff;\r\n      --soft: #f4f8f9;\r\n      --brand: #027d8a;\r\n      --brand-dark: #075069;\r\n      --leaf: #3e9c55;\r\n      --warn: #d98024;\r\n    }\r\n\r\n    * {\r\n      box-sizing: border-box;\r\n    }\r\n\r\n    body {\r\n      margin: 0;\r\n      font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Microsoft YaHei\", sans-serif;\r\n      color: var(--ink);\r\n      background: #f7fafb;\r\n      line-height: 1.65;\r\n    }\r\n\r\n    a {\r\n      color: inherit;\r\n    }\r\n\r\n    .topbar {\r\n      border-bottom: 1px solid var(--line);\r\n      background: rgba(255, 255, 255, 0.94)",
+        "bytesRead": 9146
+      }
+    },
+    {
+      "name": "HTTPS GET https://yutingsmarthome.xin/api via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 130,
+      "data": {
+        "statusLine": "HTTP/1.1 200 OK",
+        "headers": "HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)\r\nDate: Fri, 05 Jun 2026 14:17:10 GMT\r\nContent-Type: application/json\r\nContent-Length: 219\r\nConnection: close\r\nx-request-id: 26b006e1c87a\r\nCache-Control: no-store",
+        "bodyPreview": "{\"success\":true,\"code\":\"OK\",\"message\":\"\",\"data\":{\"service\":\"yt_smart_home_server\",\"message\":\"Yunting Smart Home API endpoint. Use POST /api with JSON body.\",\"method\":\"POST\",\"requestShape\":{\"type\":\"api.type\",\"data\":{}}}}",
+        "bytesRead": 431
+      }
+    },
+    {
+      "name": "HTTPS POST https://yutingsmarthome.xin/api via 39.97.237.214:443",
+      "ok": true,
+      "durationMs": 134,
+      "data": {
+        "statusLine": "HTTP/1.1 200 OK",
+        "headers": "HTTP/1.1 200 OK\r\nServer: nginx/1.18.0 (Ubuntu)\r\nDate: Fri, 05 Jun 2026 14:17:10 GMT\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\nx-request-id: 7972b845513c\r\nCache-Control: no-store",
+        "bodyPreview": "{\"success\":false,\"code\":\"SESSION_EXPIRED\",\"message\":\"登录已过期，请重新登录\",\"data\":null}",
+        "bytesRead": 312
+      }
+    }
+  ],
+  "notes": [
+    "POST test uses auth.checkSession with an invalid diagnostic token; it does not send SMS.",
+    "If TCP succeeds but TLS/HTTPS fails with ConnectionResetError, the reset happens before the application reaches FastAPI.",
+    "If browser access succeeds while this script and WeChat wx.request fail, ask the cloud provider to check HTTPS access policies for non-browser clients and TLS fingerprint filtering."
+  ],
+  "summary": {
+    "total": 8,
+    "failed": 0,
+    "passed": 8
+  }
+}
