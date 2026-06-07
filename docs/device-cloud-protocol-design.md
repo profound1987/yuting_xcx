@@ -512,7 +512,22 @@ nonce = direction(1字节) || bootRandom(8字节) || seq(4字节)
     "localIp": "192.168.1.24",
     "mac": "AA:BB:CC:DD:EE:FF"
   },
-  "capabilities": ["watering", "telemetry", "commandAck"],
+  "capabilities": {
+    "schemaVersion": 1,
+    "model": "YT-AW-BASIC-SM",
+    "components": {
+      "waterPump": { "present": true, "channels": 1 },
+      "soilMoistureSensor": { "present": true, "valueType": "percent" },
+      "waterLevelSensor": { "present": false },
+      "localStorage": { "present": true, "persistentConfig": true }
+    },
+    "features": {
+      "manualWatering": { "supported": true },
+      "scheduleWatering": { "supported": true },
+      "demandWatering": { "supported": true },
+      "waterTankProtection": { "supported": false }
+    }
+  },
   "errors": []
 }
 ```
@@ -559,7 +574,11 @@ nonce = direction(1字节) || bootRandom(8字节) || seq(4字节)
 | `network.wifiRssi` | number | 否 | Wi‑Fi RSSI，单位 dBm |
 | `network.localIp` | string | 成功时建议 | 设备局域网 IP |
 | `network.mac` | string | 建议 | 设备 MAC 地址，用于售后排查 |
-| `capabilities` | string[] | 成功时建议 | 设备能力列表，例如 `watering`、`telemetry`、`commandAck` |
+| `capabilities` | object | 成功时必填 | 设备能力对象；用于小程序动态显示功能项和服务端校验配置，不应只是字符串数组 |
+| `capabilities.schemaVersion` | number | 是 | 能力描述 schema 版本，当前建议 `1` |
+| `capabilities.model` | string | 建议 | 设备型号或硬件版本标识，用于售后和模板匹配 |
+| `capabilities.components` | object | 是 | 设备硬件/基础组件，例如水泵、土壤湿度传感器、水位传感器、本地存储 |
+| `capabilities.features` | object | 是 | 产品功能开关和参数约束，例如手动浇水、定期浇水、按需浇水 |
 | `errors` | object[] | 否 | 设备侧错误列表；成功时为空数组或省略 |
 
 `result` 取值：
@@ -598,8 +617,10 @@ nonce = direction(1字节) || bootRandom(8字节) || seq(4字节)
 9. 校验 `provisionSessionId` 是否由 `device.prepareConfigure` 创建，且未过期、未使用、属于当前配置流程。
 10. 如果 `result = failed`，记录失败 payload，把配网会话标记为 `failed`，并返回失败 ACK。
 11. 如果 `result = success`，写入设备最近在线时间、固件版本、网络信息和配网结果。
-12. 将该配网会话标记为 `ready_to_bind`。
-13. 小程序随后调用 `device.bind` 时，云端必须校验该会话，而不是相信小程序传入的 `provisioned: true`。
+12. 如果 payload 包含完整 `capabilities` 对象，服务端校验 `schemaVersion`、`components`、`features` 基础结构后保存到 `capabilities_json`，并把 `capability_state` 置为 `reported`。服务端可以自行计算内部摘要用于排障，但设备端不必上报 `capabilityHash`。
+13. 服务端配置和控制校验必须优先使用该设备最新上报的能力快照；如果设备能力不支持某 feature，即使系统模板存在该 feature，也必须拒绝相关配置和命令。
+14. 将该配网会话标记为 `ready_to_bind`。
+15. 小程序随后调用 `device.bind` 时，云端必须校验该会话，而不是相信小程序传入的 `provisioned: true`。
 
 服务端返回的 `provision.ack` 解密后 payload：
 
@@ -898,8 +919,8 @@ yt/v1/devices/{deviceNo}
 | `device.status` | 通用，已定义核心字段 | 所有设备一致；retained 在线/离线状态，主要用于在线展示和 Last Will |
 | `telemetry.report` | 通用骨架 + 设备扩展，已定义 | 基础心跳字段所有设备一致；`state` / `metrics` 按设备类型扩展 |
 | `error.report` | 通用骨架 + 设备扩展，已定义 | 错误级别、模块、错误码结构一致；具体故障原因按设备类型扩展 |
-| `command.ack` | 通用骨架，已定义 | ACK 结构一致；具体 `commandType` 等控制命令后续按设备类型定义 |
-| `{deviceType}.{command}` | 暂不定义 | 例如浇水设备的保存配置、手动开始/停止浇水，后续做具体设备时再规划 |
+| `command.ack` | 通用骨架，已定义 | ACK 结构一致；具体 `commandType` 等控制命令按设备类型定义 |
+| `{deviceType}.{command}` | 设备专项定义 | 浇水设备已在 `watering-control-sync-design.md` 中定义能力驱动配置、手动控制和命令状态机；其它设备后续补充 |
 
 云端应按 `deviceNo + nonce` 做防重放，并按业务 payload 中的 `cmdId` / `eventId` 做幂等处理，避免网络重发造成重复执行。
 
@@ -958,6 +979,8 @@ Will 的 `msgType` 为 `device.status`，实际 payload 是预先用 AES-128-CCM
 }
 ```
 
+为简化设备端首版实现，`device.boot` 默认不要求携带 `capabilityVersion` 或 `capabilityHash`。如果固件升级、硬件检测结果变化或能力参数范围变化，设备应在本次 `device.boot` 中直接携带完整 `capabilities` 对象；云端收到完整能力后覆盖保存能力快照。
+
 `bootReason` 建议值：
 
 | 值 | 含义 |
@@ -969,7 +992,88 @@ Will 的 `msgType` 为 `device.status`，实际 payload 是预先用 AES-128-CCM
 | `wifi_reconnect` | Wi‑Fi 断线后重连 |
 | `mqtt_reconnect` | MQTT 重连 |
 
-服务器收到 `device.boot` 后只更新 `online`、`lastOnlineAt`、固件版本和网络信息，不得把它当成 `ready_to_bind`。
+服务器收到 `device.boot` 后只更新 `online`、`lastOnlineAt`、固件版本和网络信息，不得把它当成 `ready_to_bind`。如果 payload 同时包含完整 `capabilities`，服务端按 `provision.result` 的能力保存规则更新 `capabilities_json` 和 `capability_state`。
+
+### 8.2 MVP HTTPS 下行命令拉取 `command.pull`
+
+正式环境推荐通过 MQTTS `down` Topic 下发命令；但在 MVP 阶段，如果 Broker、CA、短期 token 和 ACL 尚未全部就绪，设备可以先通过 HTTPS `device.secureMessage` 轮询拉取命令。该方案与 MQTTS 使用同一套 YTS-SEC/1 安全信封。
+
+设备请求外层仍是 `POST /api type=device.secureMessage`，安全信封外层 `msgType` 固定为：
+
+```text
+command.pull
+```
+
+`command.pull` 解密后的明文 payload：
+
+```json
+{
+  "maxCommands": 1,
+  "supportedCommandTypes": [
+    "watering.config.set",
+    "watering.manual.start",
+    "watering.manual.stop"
+  ]
+}
+```
+
+服务端响应使用 `direction=0x02` 的 nonce 单独加密整个响应 payload，安全信封 `msgType` 固定为：
+
+```text
+command.pull.ack
+```
+
+响应解密后的 payload 每次最多返回 1 条命令：
+
+```json
+{
+  "serverTime": 1710000001000,
+  "commands": [
+    {
+      "cmdId": "cmd_abc001",
+      "commandType": "watering.config.set",
+      "ttlSeconds": 60,
+      "params": {
+        "configVersion": 1,
+        "configHash": "sha256(canonicalJson(config))",
+        "config": {
+          "schemaVersion": 1,
+          "enabledFeatures": ["demandWatering"],
+          "automationMode": "demandWatering",
+          "features": {
+            "demandWatering": {
+              "checkIntervalHours": 4,
+              "thresholdPercent": 35,
+              "durationSeconds": 20
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+没有命令时返回：
+
+```json
+{
+  "serverTime": 1710000001000,
+  "commands": []
+}
+```
+
+MVP 规则：
+
+1. `command.pull.ack` 加密整个 `commands` 数组；不要对数组中每条命令再单独套一层安全信封。
+2. 每次最多返回 1 条命令，避免多命令 ACK、重试和顺序处理复杂化。
+3. 服务端只返回 `supportedCommandTypes` 中设备声明支持的命令；设备未声明时，服务端按兼容模式处理。
+4. 服务端把被返回的命令状态从 `queued` 更新为 `sent`。
+5. 设备执行后必须单独上报 `command.ack`，`cmdId` 必须等于命令中的 `cmdId`。
+6. 如果上一条命令已经进入 `received` 或 `executing` 且尚未终态，服务端下一次 `command.pull` 必须返回空数组，直到收到最终 ACK 或命令超时。
+7. 服务端收到该命令最终 ACK 后，才会在下一次 `command.pull` 中返回后续命令。
+8. 如果设备收到命令时已过 `ttlSeconds`，必须上报 `command.ack status=failed code=EXPIRED`。
+9. 下行安全信封 AAD 中的 `msgType` 使用 `command.pull.ack`；命令具体类型放在解密后的 `commands[0].commandType`。
 
 ## 9. 遥测与心跳 `telemetry.report`
 
@@ -1021,8 +1125,9 @@ yt/v1/devices/{deviceNo}/up
   },
   "state": {
     "pumpOn": false,
-    "mode": "demand",
-    "remainingSeconds": 0
+    "automationMode": "demandWatering",
+    "remainingSeconds": 0,
+    "appliedConfigVersion": 2
   },
   "metrics": {
     "soilMoisturePercent": 42,
@@ -1115,10 +1220,11 @@ yt/v1/devices/{deviceNo}/up
 
 | 扩展区 | 字段 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| `state` | `mode` | string | `manual`、`schedule`、`demand`、`off` |
+| `state` | `automationMode` | string | 当前自动策略：`off`、`scheduleWatering`、`demandWatering`；仅表示设备当前运行策略，不表示小程序本地 tab |
 | `state` | `pumpOn` | boolean | 水泵当前是否开启 |
 | `state` | `remainingSeconds` | number | 当前浇水剩余秒数；未浇水为 0 |
-| `metrics` | `soilMoisturePercent` | number/null | 土壤湿度百分比，0 - 100；无传感器可为 `null` |
+| `state` | `appliedConfigVersion` | number | 设备当前已应用配置版本；未配置为 0 |
+| `metrics` | `soilMoisturePercent` | number/null | 土壤湿度百分比，0 - 100；无传感器可为 `null`，不得伪造 |
 | `metrics` | `waterTankLevelPercent` | number/null | 水箱水位百分比，0 - 100；无水位传感器可为 `null` |
 | `metrics` | `lastWateringAt` | number | 最近一次浇水时间，毫秒时间戳；无 RTC 可为 0 |
 | `metrics` | `lastWateringDurationSeconds` | number | 最近一次浇水持续秒数 |
@@ -1201,21 +1307,33 @@ MVP 阶段如果还没有真实传感器或执行器，可以使用模拟 `state
 
 具体设备可以在专项协议中定义更细的错误码，例如浇水设备可扩展水泵、水位、土壤湿度等故障原因；灯控设备可扩展亮度驱动、色温驱动等故障原因。
 
-## 10. 设备专项控制指令（后续定义）
+## 10. 设备专项控制指令
 
 云端只在完成用户会话校验、设备归属校验和业务参数校验后，才允许向设备下发控制指令。下行消息必须使用 `direction=0x02` 的 AES-128-CCM nonce。
 
-通用协议只规定控制指令的安全信封和命名方式，不在本文档细化具体设备的业务 payload。具体设备协议后续单独定义，例如：
+通用协议只规定控制指令的安全信封、统一命令骨架、ACK 规则和命名方式。具体设备的业务 payload 应在专项文档中定义。
 
-| 设备类型 | 控制指令状态 | 后续专项文档内容 |
+当前已完成智能浇水设备专项控制与配置同步设计，详见：
+
+- [`watering-control-sync-design.md`](./watering-control-sync-design.md)
+
+| 设备类型 | 控制指令状态 | 专项文档内容 |
 | --- | --- | --- |
-| 浇水设备 `watering` | 后续规划，不在本文定义 | 浇水模式、阈值、定时、手动时长、安全限制 |
+| 浇水设备 `watering` | 已设计，待实现 | 设备能力上报、空配置首次体验、小程序按能力动态渲染、手动浇水、配置命令状态机、错误码、超时时间 |
 | 灯控 `light` | 后续规划，不在本文定义 | 开关、亮度、色温、场景 |
 | 插座 `socket` | 后续规划，不在本文定义 | 继电器开关、定时、功率保护 |
 | 传感器 `sensor` | 后续规划，不在本文定义 | 采样周期、告警阈值 |
 | 网关 `gateway` | 后续规划，不在本文定义 | 子设备发现、同步、转发 |
 
-后续具体控制指令应遵循统一骨架：
+浇水设备当前建议的业务命令类型：
+
+| commandType | 说明 |
+| --- | --- |
+| `watering.config.set` | 下发新的自动浇水配置 |
+| `watering.manual.start` | 开始一次手动浇水 |
+| `watering.manual.stop` | 停止当前浇水 |
+
+所有具体控制指令应遵循统一骨架：
 
 ```json
 {
@@ -1233,16 +1351,22 @@ MVP 阶段如果还没有真实传感器或执行器，可以使用模拟 `state
 | `ttlSeconds` | number | 是 | 指令有效期，设备收到过期指令必须拒绝执行 |
 | `params` | object | 是 | 具体设备专项参数 |
 
-因此，浇水设备控制指令当前只作为后续需求方向，不作为设备端实现依据。等开始做浇水设备控制闭环时，再定义完整 `msgType`、字段、范围、默认值、互斥规则和安全限制。
+设备端实现浇水控制时，应以 `watering-control-sync-design.md` 为业务字段和状态机依据，以本文档的 `YTS-SEC/1` 为安全信封依据。
 
-## 11. 指令 ACK
+## 11. 指令 ACK 与状态查询
 
-设备收到指令并通过 AES-128-CCM 认证解密后必须发布 ACK。ACK 分两类：
+设备收到指令并通过 AES-128-CCM 认证解密后必须通过 `command.ack` 单独上报命令状态。HTTPS MVP 下，ACK 也通过 `POST /api type=device.secureMessage` 上报；MQTTS 阶段通过 `up` Topic 上报，安全信封完全一致。
 
-- `received`：已经收到并通过基础校验。
-- `success` / `failed`：执行结果。
+ACK 状态取值：
 
-MVP 阶段可以只返回最终结果；正式环境建议先回 `received`，再回最终结果。
+| status | 含义 | 是否终态 | 服务端处理 |
+| --- | --- | --- | --- |
+| `received` | 设备已收到命令并通过基础校验 | 否 | `sent -> received`，记录 `received_at` |
+| `executing` | 设备已开始执行命令 | 否 | `received/sent -> executing`，记录 `executing_at` |
+| `succeeded` | 命令执行成功 | 是 | 记录 `ack_at`、`result_json`，配置命令更新 `appliedConfig` |
+| `failed` | 命令执行失败 | 是 | 记录 `ack_at`、`result_code`、`failed_reason` |
+
+兼容说明：设备若上报旧值 `success`，服务端按 `succeeded` 处理；设备若上报旧值 `ack`，服务端按 `received` 处理。
 
 Topic：
 
@@ -1252,16 +1376,38 @@ yt/v1/devices/{deviceNo}/up
 
 安全信封中的 `msgType` 为 `command.ack`。
 
-成功 ACK 解密后的明文 payload：
+配置成功 ACK 解密后的明文 payload：
+
+```json
+{
+  "cmdId": "cmd_abc001",
+  "commandType": "watering.config.set",
+  "status": "succeeded",
+  "code": "OK",
+  "message": "config applied",
+  "applied": true,
+  "appliedConfigVersion": 2,
+  "appliedConfigHash": "sha256(canonicalJson(config))",
+  "result": {
+    "automationMode": "demandWatering"
+  }
+}
+```
+
+手动浇水成功 ACK 解密后的明文 payload：
 
 ```json
 {
   "cmdId": "cmd_abc002",
-  "commandType": "deviceType.commandName",
-  "status": "success",
+  "commandType": "watering.manual.start",
+  "status": "succeeded",
   "code": "OK",
-  "message": "command applied",
-  "applied": true
+  "message": "manual watering started",
+  "applied": true,
+  "result": {
+    "durationSeconds": 10,
+    "startedAt": 1710000001000
+  }
 }
 ```
 
@@ -1269,16 +1415,72 @@ yt/v1/devices/{deviceNo}/up
 
 ```json
 {
-  "cmdId": "cmd_abc002",
-  "commandType": "deviceType.commandName",
+  "cmdId": "cmd_abc003",
+  "commandType": "watering.manual.start",
   "status": "failed",
-  "code": "INVALID_PARAM",
-  "message": "command parameter invalid",
-  "applied": false
+  "code": "BUSY",
+  "message": "pump is already running",
+  "applied": false,
+  "result": {
+    "pumpOn": true,
+    "remainingSeconds": 12
+  }
 }
 ```
 
-云端收到 ACK 后更新 `device_commands.status`、`sent_at`、`ack_at` 和 `failed_reason`。
+云端命令状态机：
+
+| 云端状态 | 来源 | 含义 |
+| --- | --- | --- |
+| `queued` | 服务端 | 命令已创建，等待设备拉取或发布 |
+| `sent` | 服务端 | 命令已通过 HTTPS pull 返回给设备，或已发布到 MQTTS down Topic |
+| `received` | 设备 ACK | 设备确认收到并通过基础校验 |
+| `executing` | 设备 ACK | 设备开始执行 |
+| `succeeded` | 设备 ACK | 执行成功，终态 |
+| `failed` | 设备 ACK | 执行失败，终态 |
+| `delivery_timeout` | 服务端定时任务 | 已下发但超时未收到设备确认，终态 |
+| `execution_timeout` | 服务端定时任务 | 已执行但超时未收到最终结果，终态 |
+| `publish_failed` | 服务端 | MQTTS 发布失败，终态 |
+| `expired` | 服务端或设备 | 命令超过 TTL 未执行，终态 |
+
+小程序调用 `watering.saveConfig`、`watering.startManual`、`watering.stopManual` 成功，只表示服务端已接受并创建命令，不表示设备已执行。小程序必须调用 `device.getCommandStatus` 查询命令状态：
+
+```json
+{
+  "type": "device.getCommandStatus",
+  "data": {
+    "sessionToken": "用户登录态",
+    "deviceNo": "YT-AW-00000-A324",
+    "commandId": "cmd_abc001"
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "data": {
+    "command": {
+      "id": "cmd_abc001",
+      "deviceNo": "YT-AW-00000-A324",
+      "commandType": "watering.config.set",
+      "status": "succeeded",
+      "statusText": "执行成功",
+      "terminal": true,
+      "createdAt": 1710000000000,
+      "sentAt": 1710000001000,
+      "ackAt": 1710000003000,
+      "resultCode": "OK",
+      "result": {}
+    }
+  }
+}
+```
+
+云端收到 ACK 后更新 `device_commands.status`、`sent_at`、`received_at`、`executing_at`、`ack_at`、`result_code`、`result_json` 和 `failed_reason`。
 
 ## 12. 错误码
 
@@ -1351,8 +1553,8 @@ yt/v1/devices/{deviceNo}/up
 - AES-CCM nonce 在同一密钥下绝不能重复，服务端必须做 nonce/seq 防重放。
 - 服务端必须先通过 AES-128-CCM tag 校验和解密，才能接受设备上报、ACK 或配网结果。
 - `device.bind` 必须检查服务端已确认的 `ready_to_bind` 配网会话，不能相信小程序传入的 `provisioned: true`。
-- Broker 必须配置 Topic ACL，防止设备订阅或发布其它设备 Topic。
-- 正式环境必须使用 MQTTS。
+- Broker 如启用必须配置 Topic ACL，防止设备订阅或发布其它设备 Topic。
+- 正式环境如启用 MQTT，必须使用 MQTTS；MVP 阶段允许先用 HTTPS `device.secureMessage` 完成上报、拉取命令和 ACK。
 - 服务端应记录控制指令、ACK、设备状态和管理员操作，形成售后排障证据链。
 - 对同一设备的高频控制应限流，避免执行器被恶意或误操作频繁启动。
 
@@ -1372,18 +1574,18 @@ BL616CL 智能节点首版实现：
 - 支持通过 HTTPS `device.secureMessage` 上报 `provision.result`，完成入网认证。
 - 支持通过 HTTPS 或 MQTTS 上报 `device.boot`，用于断电重启、复位和重连诊断。
 - 支持启动云端设备任务。
-- 使用 MQTT/MQTTS 连接 Broker，MQTT 登录凭据不得使用 eFuse AES key 明文。
-- 发布 retained 在线状态，payload 使用 YTS-SEC/1 安全信封。
-- 周期发布通用心跳，可在 `state` / `metrics` 中携带首版设备已有的模拟状态，payload 使用 YTS-SEC/1 安全信封。
-- 订阅 `down` Topic，并对下行安全信封完成 AES-128-CCM 认证解密。
-- 支持通用 `command.ack` 骨架，payload 使用 YTS-SEC/1 安全信封；具体控制指令暂不作为首版必选项。
+- HTTPS MVP 阶段使用 `device.secureMessage` 完成 `device.boot`、`telemetry.report`、`command.pull` 和 `command.ack`；如果同时启用 MQTT/MQTTS，MQTT 登录凭据不得使用 eFuse AES key 明文。
+- 周期上报通用心跳，可在 `state` / `metrics` 中携带首版设备已有的模拟状态，payload 使用 YTS-SEC/1 安全信封。
+- 支持通过 HTTPS `device.secureMessage` 发送 `command.pull`，拉取最多 1 条下行命令。
+- 支持解密 `command.pull.ack` 响应，并执行 `watering.config.set`、`watering.manual.start`、`watering.manual.stop` 三类浇水命令。
+- 支持通用 `command.ack` 骨架，payload 使用 YTS-SEC/1 安全信封，并至少上报最终状态 `succeeded` 或 `failed`。
 
 首版暂不实现：
 
 - BLE 配网加密握手和特征值权限强化。
 - OTA 升级。
-- 真实土壤湿度传感器驱动。
-- 具体设备控制协议，例如浇水配置、手动控制、灯控、插座控制等。
+- MQTTS Broker 短期 token、设备 Topic ACL 和 CA 证书轮换；首版用 HTTPS `command.pull` 替代下行。
+- 灯控、插座等其它设备专项控制协议。
 
 ## 15. 后续演进
 
@@ -1394,7 +1596,7 @@ BL616CL 智能节点首版实现：
 3. 服务端新增 `device.secureMessage`，根据 `deviceNo` + `keyId` 查密钥并做 AES-128-CCM 认证解密。
 4. 服务端按 `device.secureMessage` 解密后的 `msgType=provision.result` 处理入网结果，把配网会话标记为 `ready_to_bind`。
 5. 移除 `device.bind` 对小程序 `provisioned: true` 的信任，只接受服务端已认证的配网会话。
-6. 服务器部署 Mosquitto 或 EMQX，开放 MQTTS 8883。
-7. 服务端新增设备消息服务，消费遥测与 ACK，发布控制指令。
+6. MVP 阶段先通过 HTTPS `command.pull` 完成下行；后续服务器部署 Mosquitto 或 EMQX，开放 MQTTS 8883。
+7. 服务端新增 MQTTS 设备消息服务，消费遥测与 ACK，发布控制指令，并逐步替换 HTTPS 轮询下行。
 8. 接入 OTA，支持 CA 证书、Broker 地址和固件升级。
 9. 根据设备规模从 SQLite 迁移到 PostgreSQL 或 MySQL，并增加遥测归档策略。

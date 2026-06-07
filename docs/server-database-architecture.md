@@ -230,19 +230,20 @@ ready_to_bind
 | `id` | 指令 ID，也作为设备 ACK 的 `cmdId` |
 | `device_no` | 目标设备 |
 | `user_id` | 发起用户 |
-| `command_type` | 指令类型，例如后续 `watering.xxx`、`light.xxx` |
+| `command_type` | 指令类型，例如 `watering.config.set`、`watering.manual.start`、`watering.manual.stop` |
 | `payload_json` | 指令业务参数 |
-| `status` | `pending`、`sent`、`success`、`failed` 等 |
+| `status` | `queued`、`sent`、`received`、`executing`、`succeeded`、`failed`、`expired`、`delivery_timeout`、`execution_timeout`、`publish_failed` |
 | `created_at` | 创建时间 |
-| `sent_at` | 下发时间 |
-| `ack_at` | 设备 ACK 时间 |
+| `sent_at` | 通过 HTTPS pull 返回给设备或 MQTTS 发布时间 |
+| `received_at` | 设备 ACK `received` 时间 |
+| `executing_at` | 设备 ACK `executing` 时间 |
+| `ack_at` | 终态 ACK 或超时时间 |
+| `expires_at` | 指令过期时间 |
 | `failed_reason` | 失败原因 |
+| `result_code` | 设备结果码 |
+| `result_json` | 设备 ACK 原始结果 |
 
-当前代码里浇水控制接口仍作为小程序功能存在，但设备云端协议文档已把具体控制命令延后为设备专项协议。也就是说：
-
-- 数据库可以记录控制指令。
-- 通用协议只定义 `command.ack` 骨架。
-- 具体设备控制 payload 后续按设备类型单独设计。
+MVP 阶段设备通过 HTTPS `device.secureMessage msgType=command.pull` 拉取最多 1 条命令；设备执行后通过 `command.ack` 独立上报状态。
 
 ### 4.7 遥测与故障数据当前保存方式
 

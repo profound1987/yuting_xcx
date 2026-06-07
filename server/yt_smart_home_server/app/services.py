@@ -129,12 +129,90 @@ def normalize_device_no(value: str | None) -> str:
 
 
 def default_watering_config() -> dict[str, Any]:
-    return {
-        "mode": "demand",
-        "demand": {"intervalHours": 4, "threshold": 35, "durationSeconds": 20},
-        "schedule": {"intervalDays": 1, "times": 2, "durationSeconds": 30},
-        "manual": {"durationSeconds": 10},
+    """Legacy compatibility field.
+
+    Real watering configuration starts empty. Recommended values live in device
+    capabilities and are only used as placeholders or to fill a user draft.
+    """
+    return {}
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def stable_hash(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def normalize_capabilities_for_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(canonical_json(capabilities))
+
+
+def default_watering_capabilities() -> dict[str, Any]:
+    capabilities = {
+        "schemaVersion": 1,
+        "model": "YT-AW-BASIC-SM",
+        "hwVersion": "dev",
+        "fwVersion": "dev",
+        "components": {
+            "waterPump": {"present": True, "channels": 1, "feedback": "none"},
+            "soilMoistureSensor": {"present": True, "valueType": "percent", "range": {"min": 0, "max": 100}, "calibratable": True},
+            "waterLevelSensor": {"present": False},
+            "rtc": {"present": False},
+            "localStorage": {"present": True, "persistentConfig": True},
+        },
+        "features": {
+            "manualWatering": {
+                "supported": True,
+                "label": "手动浇水",
+                "commands": ["watering.manual.start", "watering.manual.stop"],
+                "params": {
+                    "durationSeconds": {"type": "integer", "unit": "s", "required": True, "min": 1, "max": 3600, "recommended": 10, "default": None}
+                },
+            },
+            "scheduleWatering": {
+                "supported": True,
+                "label": "定期浇水",
+                "requires": ["waterPump", "localStorage"],
+                "params": {
+                    "intervalDays": {"type": "integer", "unit": "day", "required": True, "min": 1, "max": 365, "recommended": 1, "default": None},
+                    "timesPerDay": {"type": "integer", "unit": "count", "required": True, "min": 1, "max": 24, "recommended": 2, "default": None},
+                    "durationSeconds": {"type": "integer", "unit": "s", "required": True, "min": 1, "max": 3600, "recommended": 30, "default": None},
+                },
+            },
+            "demandWatering": {
+                "supported": True,
+                "label": "按需浇水",
+                "requires": ["waterPump", "soilMoistureSensor", "localStorage"],
+                "params": {
+                    "checkIntervalHours": {"type": "integer", "unit": "hour", "required": True, "min": 1, "max": 72, "recommended": 4, "default": None},
+                    "thresholdPercent": {"type": "integer", "unit": "%", "required": True, "min": 1, "max": 100, "recommended": 35, "default": None},
+                    "durationSeconds": {"type": "integer", "unit": "s", "required": True, "min": 1, "max": 3600, "recommended": 20, "default": None},
+                },
+            },
+            "waterTankProtection": {"supported": False, "label": "缺水保护", "requires": ["waterLevelSensor"]},
+        },
     }
+    return normalize_capabilities_for_storage(capabilities)
+
+
+def default_capabilities_for_device_type(device_type: str | None) -> dict[str, Any]:
+    if device_type == "watering":
+        return default_watering_capabilities()
+    return normalize_capabilities_for_storage({"schemaVersion": 1, "components": {}, "features": {}})
+
+
+def empty_config_json() -> str:
+    return json_dumps({})
+
+
+def capability_state_for_device_type(device_type: str | None) -> str:
+    return "pending"
+
+
+def initial_capabilities_json(device_type: str | None) -> str:
+    return json_dumps({})
 
 
 def crc_check_code(body: str) -> str:
@@ -307,6 +385,89 @@ def ensure_all_device_keys(connection, current_time: int) -> None:
         ensure_device_key(connection, row["device_no"], current_time)
 
 
+def backfill_capabilities_from_provision_reports(connection, current_time: int) -> None:
+    rows = connection.execute(
+        """
+        SELECT dps.device_no, dps.report_json
+        FROM device_provision_sessions dps
+        JOIN (
+          SELECT device_no, MAX(COALESCE(ready_at, updated_at, created_at)) AS latest_at
+          FROM device_provision_sessions
+          WHERE auth_verified = 1
+            AND status IN ('ready_to_bind', 'bound')
+            AND report_json IS NOT NULL
+            AND report_json <> '{}'
+          GROUP BY device_no
+        ) latest
+          ON latest.device_no = dps.device_no
+         AND latest.latest_at = COALESCE(dps.ready_at, dps.updated_at, dps.created_at)
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            report = json_loads(row["report_json"], {})
+        except Exception:
+            continue
+        capabilities = report.get("capabilities") if isinstance(report, dict) else None
+        if not isinstance(capabilities, dict) or not capabilities:
+            continue
+        device = row_to_dict(
+            connection.execute(
+                "SELECT capabilities_json FROM device_registry WHERE device_no = ?",
+                (row["device_no"],),
+            ).fetchone()
+        )
+        if not device:
+            continue
+        existing = json_loads(device.get("capabilities_json"), {})
+        if existing:
+            continue
+        save_device_capabilities(connection, row["device_no"], capabilities, current_time)
+
+
+def ensure_seed_device_metadata(connection, current_time: int) -> None:
+    watering_capabilities_json = json_dumps(default_watering_capabilities())
+    generic_capabilities_json = json_dumps(default_capabilities_for_device_type("generic"))
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET config_json = '{}', config_state = 'unconfigured', desired_config_json = NULL,
+            desired_config_version = 0, desired_config_hash = NULL,
+            applied_config_json = NULL, applied_config_version = 0, applied_config_hash = NULL,
+            pending_command_id = NULL, updated_at = ?
+        WHERE device_type = 'watering'
+          AND mock_scenario IN ('sale-unbound-online', 'sale-bound-online', 'sale-bound-offline')
+          AND config_state = 'unconfigured'
+          AND desired_config_json IS NULL
+          AND applied_config_json IS NULL
+        """,
+        (current_time,),
+    )
+    connection.execute(
+        f"""
+        UPDATE device_registry
+        SET capability_state = 'reported', capabilities_json = ?, updated_at = ?
+        WHERE device_type = 'watering'
+          AND mock_scenario IN ('sale-unbound-online', 'sale-bound-online', 'sale-bound-offline')
+          AND (owner_user_id IS NULL OR owner_user_id IN ({sql_marks(SEED_USER_IDS)}))
+          AND (capabilities_json IS NULL OR capabilities_json = '{{}}')
+        """,
+        (watering_capabilities_json, current_time, *SEED_USER_IDS),
+    )
+    connection.execute(
+        f"""
+        UPDATE device_registry
+        SET capability_state = 'reported', capabilities_json = ?, updated_at = ?
+        WHERE device_type <> 'watering'
+          AND mock_scenario IN ('sale-unbound-online', 'sale-bound-online', 'sale-bound-offline')
+          AND (owner_user_id IS NULL OR owner_user_id IN ({sql_marks(SEED_USER_IDS)}))
+          AND (capabilities_json IS NULL OR capabilities_json = '{{}}')
+        """,
+        (generic_capabilities_json, current_time, *SEED_USER_IDS),
+    )
+    backfill_capabilities_from_provision_reports(connection, current_time)
+
+
 def ensure_seed_data() -> None:
     current_time = now_ms()
     with db() as connection:
@@ -314,6 +475,7 @@ def ensure_seed_data() -> None:
         row = connection.execute("SELECT COUNT(*) AS count FROM device_registry").fetchone()
         if row and row["count"]:
             normalize_seed_device_ownership(connection, current_time)
+            ensure_seed_device_metadata(connection, current_time)
             ensure_all_device_keys(connection, current_time)
             return
 
@@ -325,15 +487,19 @@ def ensure_seed_data() -> None:
                 online = 0 if scenario == "sale-bound-offline" else 1
                 bind_status = "unbound" if scenario == "sale-unbound-online" else "bound"
                 owner_user_id = seed_owner_user_id_for_scenario(scenario)
-                config = default_watering_config() if type_info["value"] == "watering" else {}
+                config = {}
+                capabilities = default_capabilities_for_device_type(type_info["value"])
+                capability_state = capability_state_for_device_type(type_info["value"])
                 connection.execute(
                     """
                     INSERT INTO device_registry(
                       device_no, type_code, serial, device_type, type_label, name, status,
                       bind_status, online, owner_user_id, mock_scenario, display_status,
                       config_json, last_watering_at, last_synced_at, heartbeat_interval_ms,
-                      last_seen_at, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      last_seen_at, telemetry_json, capability_state, capabilities_json,
+                      config_state, desired_config_json, desired_config_version, applied_config_json,
+                      applied_config_version, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, 'unconfigured', NULL, 0, NULL, 0, ?, ?)
                     """,
                     (
                         device_no,
@@ -353,6 +519,8 @@ def ensure_seed_data() -> None:
                         None,
                         heartbeat_interval_for_device_type(type_info["value"]),
                         current_time if online else None,
+                        capability_state,
+                        json_dumps(capabilities),
                         current_time,
                         current_time,
                     ),
@@ -870,7 +1038,36 @@ def bind_event_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+COMMAND_TTL_SECONDS = {
+    "watering.config.set": 60,
+    "watering.manual.start": 10,
+    "watering.manual.stop": 10,
+}
+
+TERMINAL_COMMAND_STATUSES = {"succeeded", "failed", "delivery_timeout", "execution_timeout", "publish_failed", "expired"}
+
+
+def command_ttl_seconds(command_type: str) -> int:
+    return COMMAND_TTL_SECONDS.get(command_type, 60)
+
+
+def command_status_text(status: str) -> str:
+    return {
+        "queued": "等待设备拉取",
+        "sent": "已下发，等待设备确认",
+        "received": "设备已收到",
+        "executing": "设备执行中",
+        "succeeded": "执行成功",
+        "failed": "执行失败",
+        "delivery_timeout": "设备未及时拉取或确认",
+        "execution_timeout": "设备未返回执行结果",
+        "publish_failed": "命令发布失败",
+        "expired": "命令已过期",
+    }.get(status, status)
+
+
 def command_payload(row: dict[str, Any]) -> dict[str, Any]:
+    status = row["status"]
     return {
         "id": row["id"],
         "deviceNo": row["device_no"],
@@ -878,14 +1075,24 @@ def command_payload(row: dict[str, Any]) -> dict[str, Any]:
         "userPhoneMasked": row.get("phone_masked"),
         "commandType": row["command_type"],
         "payload": json_loads(row["payload_json"], {}),
-        "status": row["status"],
+        "status": status,
+        "statusText": command_status_text(status),
+        "terminal": status in TERMINAL_COMMAND_STATUSES,
         "createdAt": row["created_at"],
         "createdAtText": format_time_ms(row["created_at"]),
         "sentAt": row["sent_at"],
         "sentAtText": format_time_ms(row["sent_at"]),
+        "receivedAt": row.get("received_at"),
+        "receivedAtText": format_time_ms(row.get("received_at")),
+        "executingAt": row.get("executing_at"),
+        "executingAtText": format_time_ms(row.get("executing_at")),
         "ackAt": row["ack_at"],
         "ackAtText": format_time_ms(row["ack_at"]),
+        "expiresAt": row.get("expires_at"),
+        "expiresAtText": format_time_ms(row.get("expires_at")),
         "failedReason": row["failed_reason"],
+        "resultCode": row.get("result_code") or "",
+        "result": json_loads(row.get("result_json"), {}),
     }
 
 
@@ -917,6 +1124,8 @@ def device_bound_at(connection, device_no: str) -> int | None:
 def admin_device_payload(connection, device: dict[str, Any]) -> dict[str, Any]:
     owner = get_user_by_id(connection, device["owner_user_id"]) if device["owner_user_id"] else None
     bound_at = device_bound_at(connection, device["device_no"])
+    config_view = device_config_view(device)
+    capability_view = device_capability_view(device)
     return {
         "deviceNo": device["device_no"],
         "typeCode": device["type_code"],
@@ -931,7 +1140,15 @@ def admin_device_payload(connection, device: dict[str, Any]) -> dict[str, Any]:
         "ownerUserId": device["owner_user_id"],
         "ownerPhoneMasked": owner["phone_masked"] if owner else "",
         "mockScenario": device["mock_scenario"],
-        "config": json_loads(device["config_json"], {}),
+        "config": config_view["config"],
+        "configState": config_view["configState"],
+        "desiredConfig": config_view["desiredConfig"],
+        "appliedConfig": config_view["appliedConfig"],
+        "desiredConfigVersion": config_view["desiredConfigVersion"],
+        "appliedConfigVersion": config_view["appliedConfigVersion"],
+        "pendingCommandId": config_view["pendingCommandId"],
+        "capabilityState": capability_view["capabilityState"],
+        "capabilities": capability_view["capabilities"],
         "lastWateringAt": device["last_watering_at"],
         "lastSyncedAt": device["last_synced_at"],
         "lastSyncedAtText": format_time_ms(device["last_synced_at"]),
@@ -1118,7 +1335,39 @@ def get_display_status(device: dict[str, Any]) -> str:
     return "在线" if device["online"] else "离线"
 
 
+def device_config_view(device: dict[str, Any]) -> dict[str, Any]:
+    desired_config = json_loads(device.get("desired_config_json"), None)
+    applied_config = json_loads(device.get("applied_config_json"), None)
+    legacy_config = json_loads(device.get("config_json"), {})
+    config_state = device.get("config_state") or "unconfigured"
+    display_config = desired_config if desired_config is not None else (applied_config if applied_config is not None else {})
+    if config_state == "unconfigured":
+        display_config = {}
+    return {
+        "config": display_config,
+        "configState": config_state,
+        "desiredConfig": desired_config,
+        "appliedConfig": applied_config,
+        "desiredConfigVersion": int(device.get("desired_config_version") or 0),
+        "appliedConfigVersion": int(device.get("applied_config_version") or 0),
+        "desiredConfigHash": device.get("desired_config_hash") or "",
+        "appliedConfigHash": device.get("applied_config_hash") or "",
+        "pendingCommandId": device.get("pending_command_id") or "",
+        "legacyConfig": legacy_config,
+    }
+
+
+def device_capability_view(device: dict[str, Any]) -> dict[str, Any]:
+    capabilities = json_loads(device.get("capabilities_json"), {})
+    return {
+        "capabilityState": device.get("capability_state") or ("reported" if capabilities else "pending"),
+        "capabilities": capabilities,
+    }
+
+
 def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> dict[str, Any]:
+    config_view = device_config_view(device)
+    capability_view = device_capability_view(device)
     return {
         "id": device["device_no"].replace("-", "_"),
         "deviceNo": device["device_no"],
@@ -1132,7 +1381,15 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "bindStatus": device["bind_status"],
         "ownerPhone": owner_phone or "",
         "mockScenario": device["mock_scenario"],
-        "config": json_loads(device["config_json"], {}),
+        "config": config_view["config"],
+        "configState": config_view["configState"],
+        "desiredConfig": config_view["desiredConfig"],
+        "appliedConfig": config_view["appliedConfig"],
+        "desiredConfigVersion": config_view["desiredConfigVersion"],
+        "appliedConfigVersion": config_view["appliedConfigVersion"],
+        "pendingCommandId": config_view["pendingCommandId"],
+        "capabilityState": capability_view["capabilityState"],
+        "capabilities": capability_view["capabilities"],
         "lastWateringAt": device["last_watering_at"],
         "lastSyncedAt": device["last_synced_at"],
         "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
@@ -1141,7 +1398,7 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "lastBootAt": device.get("last_boot_at"),
         "lastSeenAt": device.get("last_seen_at"),
         "telemetry": json_loads(device.get("telemetry_json"), {}),
-        "syncState": "synced" if device["online"] else "offline",
+        "syncState": config_view["configState"] if device["online"] else "offline",
         "createdAt": device["created_at"],
         "updatedAt": device["updated_at"],
     }
@@ -1244,6 +1501,20 @@ def mark_stale_devices_offline(connection, current_time: int | None = None) -> N
     )
 
 
+def save_device_capabilities(connection, device_no: str, capabilities: Any, current_time: int) -> None:
+    if not isinstance(capabilities, dict) or not capabilities:
+        return
+    next_capabilities = normalize_capabilities_for_storage(capabilities)
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET capability_state = 'reported', capabilities_json = ?, updated_at = ?
+        WHERE device_no = ?
+        """,
+        (json_dumps(next_capabilities), current_time, device_no),
+    )
+
+
 def update_device_seen(connection, device_no: str, msg_type: str, payload: dict[str, Any], current_time: int) -> None:
     if msg_type == "device.status" and payload.get("online") is False:
         connection.execute(
@@ -1267,6 +1538,11 @@ def update_device_seen(connection, device_no: str, msg_type: str, payload: dict[
     elif msg_type == "device.status":
         set_parts.append("last_status_at = ?")
         params.append(current_time)
+    capabilities = payload.get("capabilities") if isinstance(payload, dict) else None
+    if isinstance(capabilities, dict) and capabilities:
+        set_parts.extend(["capability_state = 'reported'", "capabilities_json = ?"])
+        capabilities = normalize_capabilities_for_storage(capabilities)
+        params.append(json_dumps(capabilities))
     params.append(device_no)
     connection.execute(
         f"UPDATE device_registry SET {', '.join(set_parts)} WHERE device_no = ?",
@@ -1412,7 +1688,7 @@ def handle_provision_result(connection, device: dict[str, Any], session: dict[st
     if result != "success":
         current_time = now_ms()
         code = payload.get("code") or "DEVICE_PROVISION_FAILED"
-        message = payload.get("message") or "设备配网失败"
+        message = payload.get("message") or "Device provisioning failed"
         connection.execute(
             """
             UPDATE device_provision_sessions
@@ -1435,6 +1711,7 @@ def handle_provision_result(connection, device: dict[str, Any], session: dict[st
             message,
         )
 
+    save_device_capabilities(connection, device["device_no"], payload.get("capabilities"), current_time)
     connection.execute(
         """
         UPDATE device_provision_sessions
@@ -1461,15 +1738,15 @@ def handle_provision_result(connection, device: dict[str, Any], session: dict[st
             "provisionState": "ready_to_bind",
             "nextAction": "wait_bind",
             "heartbeatIntervalMs": heartbeat_interval_ms,
-            "message": "设备已上线，可以绑定",
+            "message": "Device online, ready to bind",
         },
-        "设备已上线，可以绑定",
+        "Device online, ready to bind",
     )
 
 
 def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
     if AESCCM is None:
-        return fail("CRYPTO_NOT_CONFIGURED", "服务端未安装 AES-CCM 依赖")
+        return fail("CRYPTO_NOT_CONFIGURED", "AES-CCM dependency is not installed")
 
     device_no = normalize_device_no(data.get("deviceNo"))
     key_id = str(data.get("keyId") or "k1")
@@ -1478,37 +1755,37 @@ def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
     ts = read_int(data.get("ts"))
     nonce_b64 = str(data.get("nonce") or "")
     if data.get("v") != SECURE_PROTOCOL_VERSION or data.get("alg") != SECURE_ALG or not device_no or not msg_type:
-        return fail("INVALID_PROTOCOL", "设备协议版本不支持")
+        return fail("INVALID_PROTOCOL", "Unsupported device protocol version")
 
     with db() as connection:
         device = get_device(connection, device_no)
         if not device or device["status"] != "registered":
-            return fail("INVALID_DEVICE", "设备号不正确")
+            return fail("INVALID_DEVICE", "Invalid device number")
         key_row = get_device_key(connection, device_no, key_id)
         if not key_row:
-            return fail("DEVICE_KEY_NOT_FOUND", "设备未注册或暂不可用")
+            return fail("DEVICE_KEY_NOT_FOUND", "Device key not found")
         try:
             nonce = b64url_decode(nonce_b64)
             ciphertext = b64url_decode(str(data.get("ciphertext") or ""))
             tag = b64url_decode(str(data.get("tag") or ""))
         except Exception:
-            return fail("INVALID_PROTOCOL", "设备安全消息格式错误")
+            return fail("INVALID_PROTOCOL", "Invalid secure message format")
         if len(nonce) != SECURE_NONCE_LENGTH or len(tag) != SECURE_TAG_LENGTH:
-            return fail("INVALID_PROTOCOL", "设备安全消息格式错误")
+            return fail("INVALID_PROTOCOL", "Invalid secure message format")
 
         existing_nonce = connection.execute(
             "SELECT nonce FROM device_message_nonces WHERE device_no = ? AND nonce = ?",
             (device_no, nonce_b64),
         ).fetchone()
         if existing_nonce:
-            return fail("DEVICE_REPLAY_DETECTED", "设备认证失败")
+            return fail("DEVICE_REPLAY_DETECTED", "Device authentication failed")
 
         aad = secure_aad(device_no, key_id, msg_type, seq, ts, nonce_b64)
         try:
             plaintext = AESCCM(bytes.fromhex(key_row["device_key_hex"]), tag_length=SECURE_TAG_LENGTH).decrypt(nonce, ciphertext + tag, aad)
             payload = json.loads(plaintext.decode("utf-8"))
         except Exception:
-            return fail("DEVICE_AUTH_FAILED", "设备认证失败")
+            return fail("DEVICE_AUTH_FAILED", "Device authentication failed")
 
         connection.execute(
             """
@@ -1521,11 +1798,11 @@ def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
         if msg_type == "provision.result":
             session = get_provision_session(connection, payload.get("provisionSessionId"))
             if not session:
-                return fail("PROVISION_SESSION_NOT_FOUND", "请重新配置设备")
+                return fail("PROVISION_SESSION_NOT_FOUND", "Provision session not found")
             if session["device_no"] != device_no:
-                return fail("PROVISION_SESSION_MISMATCH", "请重新配置设备")
+                return fail("PROVISION_SESSION_MISMATCH", "Provision session mismatch")
             if session["status"] not in {"pending", "ready_to_bind"} or now_ms() >= session["expires_at"]:
-                return fail("PROVISION_SESSION_EXPIRED", "配网超时，请重新配置")
+                return fail("PROVISION_SESSION_EXPIRED", "Provision session expired")
             result = handle_provision_result(connection, device, session, payload)
             if not result.get("success"):
                 return result
@@ -1540,19 +1817,119 @@ def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
             return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type})
 
         if msg_type == "command.ack":
+            update_device_seen(connection, device_no, "device.status", {"online": True}, current_time)
             cmd_id = payload.get("cmdId")
-            status = payload.get("status") or "ack"
+            raw_status = payload.get("status") or "received"
+            status = normalize_command_ack_status(str(raw_status))
+            if status not in {"received", "executing", "succeeded", "failed"}:
+                return fail("INVALID_COMMAND", "Unsupported command status")
+            command_row = get_command(connection, str(cmd_id or ""))
+            if not command_row or command_row["device_no"] != device_no:
+                return fail("INVALID_COMMAND", "Command not found")
+            if command_row["status"] in TERMINAL_COMMAND_STATUSES:
+                return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type, "duplicate": True})
+            update_fields = ["status = ?", "result_code = ?", "result_json = ?", "failed_reason = ?"]
+            params: list[Any] = [status, payload.get("code") or ("OK" if status == "succeeded" else ""), json_dumps(payload), payload.get("message") or ""]
+            if status == "received":
+                update_fields.append("received_at = ?")
+                params.append(current_time)
+                if command_row["command_type"] == "watering.manual.start":
+                    update_fields.append("expires_at = ?")
+                    params.append(current_time + (command_manual_duration_seconds(command_row) + 10) * 1000)
+            elif status == "executing":
+                update_fields.append("executing_at = ?")
+                params.append(current_time)
+                if command_row["command_type"] == "watering.manual.start":
+                    update_fields.append("expires_at = ?")
+                    params.append(current_time + (command_manual_duration_seconds(command_row) + 10) * 1000)
+            elif status in {"succeeded", "failed"}:
+                update_fields.append("ack_at = ?")
+                params.append(current_time)
+            params.extend([cmd_id, device_no])
             connection.execute(
-                """
-                UPDATE device_commands
-                SET status = ?, ack_at = ?, failed_reason = ?
-                WHERE id = ? AND device_no = ?
-                """,
-                (status, current_time, payload.get("message") or "", cmd_id, device_no),
+                f"UPDATE device_commands SET {', '.join(update_fields)} WHERE id = ? AND device_no = ?",
+                tuple(params),
             )
+            update_config_from_command_ack(connection, device_no, str(cmd_id or ""), command_row, status, payload, current_time)
+            if command_row["command_type"] == "watering.manual.start" and status in {"received", "executing"}:
+                connection.execute(
+                    "UPDATE device_registry SET display_status = '浇水中', updated_at = ? WHERE device_no = ?",
+                    (current_time, device_no),
+                )
+            if command_row["command_type"] == "watering.manual.start" and status == "succeeded":
+                last_watering_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(current_time / 1000))
+                connection.execute(
+                    "UPDATE device_registry SET display_status = '在线', last_watering_at = ?, last_synced_at = ?, updated_at = ? WHERE device_no = ?",
+                    (payload.get("finishedAtText") or payload.get("startedAtText") or last_watering_at, current_time, current_time, device_no),
+                )
+            if command_row["command_type"] == "watering.manual.start" and status == "failed":
+                connection.execute(
+                    "UPDATE device_registry SET display_status = '在线', updated_at = ? WHERE device_no = ?",
+                    (current_time, device_no),
+                )
+            if command_row["command_type"] == "watering.manual.stop" and status == "succeeded":
+                connection.execute(
+                    "UPDATE device_registry SET display_status = '在线', last_synced_at = ?, updated_at = ? WHERE device_no = ?",
+                    (current_time, current_time, device_no),
+                )
             return ok({"accepted": True, "serverTime": current_time, "msgType": msg_type})
 
-        return fail("INVALID_COMMAND", "不支持的设备消息类型")
+        if msg_type == "command.pull":
+            update_device_seen(connection, device_no, "device.status", {"online": True}, current_time)
+            expire_device_commands(connection, current_time)
+            supported_command_types = payload.get("supportedCommandTypes") if isinstance(payload, dict) else None
+            if isinstance(supported_command_types, list):
+                supported_command_types = {str(item) for item in supported_command_types if item}
+            else:
+                supported_command_types = None
+            in_flight = row_to_dict(
+                connection.execute(
+                    """
+                    SELECT * FROM device_commands
+                    WHERE device_no = ?
+                      AND status IN ('received', 'executing')
+                      AND (expires_at IS NULL OR expires_at >= ?)
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (device_no, current_time),
+                ).fetchone()
+            )
+            command_row = None
+            if not in_flight:
+                if supported_command_types is not None and not supported_command_types:
+                    command_row = None
+                else:
+                    command_query = """
+                            SELECT * FROM device_commands
+                            WHERE device_no = ?
+                              AND status IN ('queued', 'sent')
+                              AND (expires_at IS NULL OR expires_at >= ?)
+                        """
+                    command_params: list[Any] = [device_no, current_time]
+                    if supported_command_types is not None:
+                        command_query += f" AND command_type IN ({','.join('?' for _ in supported_command_types)})"
+                        command_params.extend(sorted(supported_command_types))
+                    command_query += " ORDER BY created_at ASC LIMIT 1"
+                    command_row = row_to_dict(connection.execute(command_query, tuple(command_params)).fetchone())
+            commands: list[dict[str, Any]] = []
+            if command_row:
+                if command_row["status"] == "queued":
+                    connection.execute(
+                        "UPDATE device_commands SET status = 'sent', sent_at = ?, failed_reason = '' WHERE id = ? AND device_no = ?",
+                        (current_time, command_row["id"], device_no),
+                    )
+                    command_row = get_command(connection, command_row["id"]) or command_row
+                commands.append(device_command_payload_for_pull(command_row))
+            return make_secure_response(
+                connection,
+                device_no,
+                key_id,
+                "command.pull.ack",
+                {"serverTime": current_time, "commands": commands},
+            )
+
+        return fail("INVALID_COMMAND", "Unsupported device message type")
 
 
 def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
@@ -1789,14 +2166,16 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
                 return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
 
         name = (data.get("deviceName") or "").strip() or device["type_label"]
-        config_json = device["config_json"] or json_dumps(default_watering_config() if device["device_type"] == "watering" else {})
         connection.execute(
             """
             UPDATE device_registry
-            SET bind_status = 'bound', owner_user_id = ?, name = ?, config_json = ?, updated_at = ?
+            SET bind_status = 'bound', owner_user_id = ?, name = ?, config_json = '{}',
+                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
+                desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
+                applied_config_hash = NULL, pending_command_id = NULL, updated_at = ?
             WHERE device_no = ?
             """,
-            (user["id"], name, config_json, current_time, device["device_no"]),
+            (user["id"], name, current_time, device["device_no"]),
         )
         connection.execute(
             """
@@ -1825,15 +2204,17 @@ def device_unbind(data: dict[str, Any]) -> dict[str, Any]:
         if forbidden:
             return forbidden
         current_time = now_ms()
-        reset_config = default_watering_config() if device["device_type"] == "watering" else {}
         connection.execute(
             """
             UPDATE device_registry
-            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, config_json = ?,
+            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, config_json = '{}',
+                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
+                desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
+                applied_config_hash = NULL, pending_command_id = NULL,
                 last_watering_at = '--', last_synced_at = NULL, display_status = ?, updated_at = ?
             WHERE device_no = ?
             """,
-            (device["type_label"], json_dumps(reset_config), "在线" if device["online"] else "离线", current_time, device_no),
+            (device["type_label"], "在线" if device["online"] else "离线", current_time, device_no),
         )
         record_bind_event(connection, device_no, user["id"], "unbind", "success")
         return ok({"deviceNo": device_no, "unboundAt": current_time}, "已解绑")
@@ -1863,12 +2244,17 @@ def device_get_status(data: dict[str, Any]) -> dict[str, Any]:
         forbidden = assert_owner(user, device)
         if forbidden:
             return forbidden
+        config_view = device_config_view(device)
+        capability_view = device_capability_view(device)
         return ok(
             {
                 "deviceNo": device["device_no"],
+                "deviceType": device["device_type"],
                 "status": get_display_status(device),
                 "online": bool(device["online"]),
-                "config": json_loads(device["config_json"], {}),
+                **capability_view,
+                **config_view,
+                "runtimeState": json_loads(device.get("telemetry_json"), {}).get("state", {}),
                 "lastWateringAt": device["last_watering_at"],
                 "lastSyncedAt": device["last_synced_at"],
                 "heartbeatIntervalMs": device_heartbeat_interval_ms(device),
@@ -1882,41 +2268,138 @@ def device_get_status(data: dict[str, Any]) -> dict[str, Any]:
         )
 
 
-def validate_watering_config(config: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def watering_features(capabilities: dict[str, Any]) -> dict[str, Any]:
+    features = capabilities.get("features") if isinstance(capabilities, dict) else None
+    return features if isinstance(features, dict) else {}
+
+
+def watering_feature_supported(capabilities: dict[str, Any], feature_name: str) -> bool:
+    feature = watering_features(capabilities).get(feature_name)
+    if not isinstance(feature, dict) or not feature.get("supported"):
+        return False
+    if feature_name == "demandWatering":
+        soil_sensor = (capabilities.get("components") or {}).get("soilMoistureSensor") if isinstance(capabilities, dict) else None
+        return bool(isinstance(soil_sensor, dict) and soil_sensor.get("present"))
+    return True
+
+
+def feature_param_rules(capabilities: dict[str, Any], feature_name: str) -> dict[str, Any]:
+    feature = watering_features(capabilities).get(feature_name)
+    params = feature.get("params") if isinstance(feature, dict) else None
+    return params if isinstance(params, dict) else {}
+
+
+def read_required_int(params: dict[str, Any], key: str, label: str, rules: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None]:
+    if key not in params or params.get(key) in (None, ""):
+        return None, fail("INVALID_CONFIG", f"请填写{label}")
     try:
-        next_config = {
-            "mode": config.get("mode") or "demand",
-            "demand": {
-                "intervalHours": int(config.get("demand", {}).get("intervalHours")),
-                "threshold": int(config.get("demand", {}).get("threshold")),
-                "durationSeconds": int(config.get("demand", {}).get("durationSeconds")),
-            },
-            "schedule": {
-                "intervalDays": int(config.get("schedule", {}).get("intervalDays")),
-                "times": int(config.get("schedule", {}).get("times")),
-                "durationSeconds": int(config.get("schedule", {}).get("durationSeconds")),
-            },
-            "manual": {"durationSeconds": int(config.get("manual", {}).get("durationSeconds"))},
-        }
+        value = int(params.get(key))
     except (TypeError, ValueError):
-        return None, fail("INVALID_CONFIG", "请输入有效整数")
-    if next_config["mode"] not in {"demand", "schedule", "manual"}:
-        return None, fail("INVALID_CONFIG", "浇水模式不正确")
-    if not 1 <= next_config["demand"]["intervalHours"] <= 72:
-        return None, fail("INVALID_CONFIG", "检测周期不正确")
-    if not 1 <= next_config["demand"]["threshold"] <= 100:
-        return None, fail("INVALID_CONFIG", "湿度阈值不正确")
-    if not 1 <= next_config["demand"]["durationSeconds"] <= 3600:
-        return None, fail("INVALID_CONFIG", "浇水时长不正确")
-    if not 1 <= next_config["schedule"]["intervalDays"] <= 365:
-        return None, fail("INVALID_CONFIG", "天数须为整数")
-    if not 1 <= next_config["schedule"]["times"] <= 24:
-        return None, fail("INVALID_CONFIG", "次数须为整数")
-    if not 1 <= next_config["schedule"]["durationSeconds"] <= 3600:
-        return None, fail("INVALID_CONFIG", "浇水时长不正确")
-    if not 1 <= next_config["manual"]["durationSeconds"] <= 3600:
-        return None, fail("INVALID_CONFIG", "浇水秒数不正确")
-    return next_config, None
+        return None, fail("INVALID_CONFIG", f"{label}必须是整数")
+    min_value = int(rules.get("min", 1)) if isinstance(rules, dict) else 1
+    max_value = int(rules.get("max", 3600)) if isinstance(rules, dict) else 3600
+    if value < min_value or value > max_value:
+        unit = rules.get("unit", "") if isinstance(rules, dict) else ""
+        suffix = f"{min_value}-{max_value}{unit}" if unit else f"{min_value}-{max_value}"
+        return None, fail("INVALID_CONFIG", f"{label}范围为{suffix}")
+    return value, None
+
+
+def normalize_legacy_watering_config(config: dict[str, Any]) -> dict[str, Any]:
+    mode = config.get("mode")
+    if mode == "demand":
+        demand = config.get("demand") or {}
+        return {
+            "enabledFeatures": ["demandWatering"],
+            "automationMode": "demandWatering",
+            "features": {
+                "demandWatering": {
+                    "checkIntervalHours": demand.get("intervalHours"),
+                    "thresholdPercent": demand.get("threshold"),
+                    "durationSeconds": demand.get("durationSeconds"),
+                }
+            },
+        }
+    if mode == "schedule":
+        schedule = config.get("schedule") or {}
+        return {
+            "enabledFeatures": ["scheduleWatering"],
+            "automationMode": "scheduleWatering",
+            "features": {
+                "scheduleWatering": {
+                    "intervalDays": schedule.get("intervalDays"),
+                    "timesPerDay": schedule.get("times") or schedule.get("timesPerDay"),
+                    "durationSeconds": schedule.get("durationSeconds"),
+                }
+            },
+        }
+    return config
+
+
+def validate_watering_config(config: dict[str, Any], capabilities: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(config, dict) or not config:
+        return None, fail("INVALID_CONFIG", "请先选择功能并填写参数")
+    config = normalize_legacy_watering_config(config)
+    enabled_features = config.get("enabledFeatures")
+    automation_mode = config.get("automationMode")
+    feature_values = config.get("features")
+    if not isinstance(enabled_features, list):
+        return None, fail("INVALID_CONFIG", "请至少启用一个浇水功能")
+    if not isinstance(feature_values, dict):
+        return None, fail("INVALID_CONFIG", "配置内容格式不正确")
+    if not enabled_features:
+        if automation_mode != "off":
+            return None, fail("INVALID_CONFIG", "关闭自动浇水时 automationMode 必须为 off")
+        return {"schemaVersion": 1, "enabledFeatures": [], "automationMode": "off", "features": {}}, None
+    if automation_mode not in enabled_features:
+        return None, fail("INVALID_CONFIG", "请选择当前自动浇水模式")
+
+    normalized_features: dict[str, Any] = {}
+    for feature_name in enabled_features:
+        if feature_name not in {"demandWatering", "scheduleWatering"}:
+            return None, fail("INVALID_CONFIG", "该功能不需要保存配置")
+        if not watering_feature_supported(capabilities, feature_name):
+            return None, fail("FEATURE_UNSUPPORTED", "设备不支持该浇水功能")
+        raw_params = feature_values.get(feature_name) or {}
+        if not isinstance(raw_params, dict):
+            return None, fail("INVALID_CONFIG", "配置内容格式不正确")
+        rules = feature_param_rules(capabilities, feature_name)
+        if feature_name == "demandWatering":
+            check_interval, error = read_required_int(raw_params, "checkIntervalHours", "检测周期", rules.get("checkIntervalHours", {}))
+            if error:
+                return None, error
+            threshold, error = read_required_int(raw_params, "thresholdPercent", "湿度阈值", rules.get("thresholdPercent", {}))
+            if error:
+                return None, error
+            duration, error = read_required_int(raw_params, "durationSeconds", "浇水时长", rules.get("durationSeconds", {}))
+            if error:
+                return None, error
+            normalized_features[feature_name] = {
+                "checkIntervalHours": check_interval,
+                "thresholdPercent": threshold,
+                "durationSeconds": duration,
+            }
+        if feature_name == "scheduleWatering":
+            interval_days, error = read_required_int(raw_params, "intervalDays", "间隔天数", rules.get("intervalDays", {}))
+            if error:
+                return None, error
+            times_per_day, error = read_required_int(raw_params, "timesPerDay", "每天次数", rules.get("timesPerDay", {}))
+            if error:
+                return None, error
+            duration, error = read_required_int(raw_params, "durationSeconds", "浇水时长", rules.get("durationSeconds", {}))
+            if error:
+                return None, error
+            normalized_features[feature_name] = {
+                "intervalDays": interval_days,
+                "timesPerDay": times_per_day,
+                "durationSeconds": duration,
+            }
+    return {
+        "schemaVersion": 1,
+        "enabledFeatures": enabled_features,
+        "automationMode": automation_mode,
+        "features": normalized_features,
+    }, None
 
 
 def create_command(
@@ -1925,35 +2408,193 @@ def create_command(
     device_no: str,
     command_type: str,
     payload: dict[str, Any],
-    status: str = "ack",
+    status: str = "queued",
     failed_reason: str = "",
-) -> None:
+    ttl_seconds: int | None = None,
+) -> str:
     current_time = now_ms()
+    command_id = make_id("cmd")
+    ttl = ttl_seconds if ttl_seconds is not None else command_ttl_seconds(command_type)
+    expires_at = current_time + max(1, int(ttl)) * 1000
     connection.execute(
         """
-        INSERT INTO device_commands(id, device_no, user_id, command_type, payload_json, status, created_at, sent_at, ack_at, failed_reason)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO device_commands(
+          id, device_no, user_id, command_type, payload_json, status, created_at,
+          sent_at, received_at, executing_at, ack_at, expires_at, failed_reason,
+          result_code, result_json
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, '{}')
         """,
         (
-            make_id("cmd"),
+            command_id,
             device_no,
             user_id,
             command_type,
             json_dumps(payload),
             status,
             current_time,
-            current_time if status in {"sent", "ack", "failed"} else None,
-            current_time if status == "ack" else None,
+            current_time if status in {"sent", "received", "executing", "succeeded", "failed"} else None,
+            current_time if status in {"succeeded", "failed"} else None,
+            expires_at,
             failed_reason,
+            "OK" if status == "succeeded" else (failed_reason if status == "failed" else ""),
         ),
     )
+    return command_id
+
+
+def get_command(connection, command_id: str | None) -> dict[str, Any] | None:
+    if not command_id:
+        return None
+    return row_to_dict(connection.execute("SELECT * FROM device_commands WHERE id = ?", (command_id,)).fetchone())
+
+
+def expire_device_commands(connection, current_time: int | None = None) -> None:
+    ts = current_time or now_ms()
+    connection.execute(
+        """
+        UPDATE device_commands
+        SET status = 'expired', ack_at = COALESCE(ack_at, ?), failed_reason = 'expired', result_code = 'EXPIRED'
+        WHERE status = 'queued'
+          AND expires_at IS NOT NULL
+          AND expires_at < ?
+        """,
+        (ts, ts),
+    )
+    connection.execute(
+        """
+        UPDATE device_commands
+        SET status = 'delivery_timeout', ack_at = COALESCE(ack_at, ?), failed_reason = 'delivery_timeout', result_code = 'DELIVERY_TIMEOUT'
+        WHERE status = 'sent'
+          AND expires_at IS NOT NULL
+          AND expires_at < ?
+        """,
+        (ts, ts),
+    )
+    connection.execute(
+        """
+        UPDATE device_commands
+        SET status = 'execution_timeout', ack_at = COALESCE(ack_at, ?), failed_reason = 'execution_timeout', result_code = 'EXECUTION_TIMEOUT'
+        WHERE status IN ('received', 'executing')
+          AND expires_at IS NOT NULL
+          AND expires_at < ?
+        """,
+        (ts, ts),
+    )
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET config_state = 'failed', pending_command_id = NULL, updated_at = ?
+        WHERE pending_command_id IN (
+            SELECT id FROM device_commands
+            WHERE command_type = 'watering.config.set'
+              AND status IN ('expired', 'delivery_timeout', 'execution_timeout', 'publish_failed')
+        )
+        """,
+        (ts,),
+    )
+
+
+def public_command_response(connection, command_id: str) -> dict[str, Any]:
+    row = get_command(connection, command_id)
+    return command_payload(row) if row else {"id": command_id, "status": "unknown", "statusText": "命令不存在"}
+
+
+def command_params_for_device(command_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if command_type == "watering.config.set":
+        return {
+            "configVersion": payload.get("configVersion"),
+            "configHash": payload.get("configHash"),
+            "config": payload.get("config") or {},
+        }
+    if command_type == "watering.manual.start":
+        return {"durationSeconds": payload.get("durationSeconds")}
+    return payload or {}
+
+
+def device_command_payload_for_pull(row: dict[str, Any]) -> dict[str, Any]:
+    payload = json_loads(row["payload_json"], {})
+    return {
+        "cmdId": row["id"],
+        "commandType": row["command_type"],
+        "ttlSeconds": max(1, int(((row.get("expires_at") or now_ms()) - now_ms()) / 1000)),
+        "params": command_params_for_device(row["command_type"], payload),
+    }
+
+
+def command_manual_duration_seconds(command_row: dict[str, Any]) -> int:
+    payload = json_loads(command_row.get("payload_json"), {})
+    try:
+        return max(1, int(payload.get("durationSeconds") or 0))
+    except (TypeError, ValueError):
+        return 1
+
+
+def update_config_from_command_ack(connection, device_no: str, cmd_id: str, command_row: dict[str, Any], status: str, payload: dict[str, Any], current_time: int) -> None:
+    if command_row["command_type"] != "watering.config.set":
+        return
+    command_data = json_loads(command_row["payload_json"], {})
+    config = command_data.get("config") if isinstance(command_data, dict) else None
+    version = int(payload.get("appliedConfigVersion") or command_data.get("configVersion") or 0) if isinstance(command_data, dict) else 0
+    config_hash = payload.get("appliedConfigHash") or command_data.get("configHash") or stable_hash(config or {})
+    if status == "succeeded" and isinstance(config, dict):
+        connection.execute(
+            """
+            UPDATE device_registry
+            SET config_state = 'synced', applied_config_json = ?, applied_config_version = ?,
+                applied_config_hash = ?, pending_command_id = NULL, last_synced_at = ?, updated_at = ?
+            WHERE device_no = ? AND pending_command_id = ?
+            """,
+            (json_dumps(config), version, config_hash, current_time, current_time, device_no, cmd_id),
+        )
+    elif status == "failed":
+        connection.execute(
+            """
+            UPDATE device_registry
+            SET config_state = 'failed', pending_command_id = NULL, updated_at = ?
+            WHERE device_no = ? AND pending_command_id = ?
+            """,
+            (current_time, device_no, cmd_id),
+        )
+
+
+def normalize_command_ack_status(status: str) -> str:
+    return {
+        "ack": "received",
+        "success": "succeeded",
+        "applied": "succeeded",
+        "succeeded": "succeeded",
+        "received": "received",
+        "executing": "executing",
+        "failed": "failed",
+        "rejected": "failed",
+        "busy": "failed",
+    }.get(status or "", status or "received")
+
+
+def device_get_command_status(data: dict[str, Any]) -> dict[str, Any]:
+    device_no = normalize_device_no(data.get("deviceNo"))
+    command_id = str(data.get("commandId") or data.get("cmdId") or "")
+    if not command_id:
+        return fail("INVALID_COMMAND", "命令编号不能为空")
+    with db() as connection:
+        user, response = resolve_user(connection, data)
+        if not response["success"] or not user:
+            return response
+        expire_device_commands(connection)
+        device = get_device(connection, device_no)
+        if not device:
+            return fail("DEVICE_NOT_FOUND", "设备不存在")
+        forbidden = assert_owner(user, device)
+        if forbidden:
+            return forbidden
+        command = get_command(connection, command_id)
+        if not command or command["device_no"] != device_no:
+            return fail("INVALID_COMMAND", "命令不存在")
+        return ok({"command": command_payload(command)})
 
 
 def watering_save_config(data: dict[str, Any]) -> dict[str, Any]:
     device_no = normalize_device_no(data.get("deviceNo"))
-    config, config_error = validate_watering_config(data.get("config") or {})
-    if config_error:
-        return config_error
     with db() as connection:
         user, response = resolve_user(connection, data)
         if not response["success"] or not user:
@@ -1964,21 +2605,50 @@ def watering_save_config(data: dict[str, Any]) -> dict[str, Any]:
         forbidden = assert_owner(user, device)
         if forbidden:
             return forbidden
+        capabilities = device_capability_view(device)["capabilities"]
+        config, config_error = validate_watering_config(data.get("config") or {}, capabilities)
+        if config_error:
+            return config_error
         if device["status"] != "registered":
-            create_command(connection, user["id"], device_no, "watering.saveConfig", {"config": config}, "failed", "device_disabled")
+            create_command(connection, user["id"], device_no, "watering.config.set", {"config": config}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
         if not device["online"]:
-            create_command(connection, user["id"], device_no, "watering.saveConfig", {"config": config}, "failed", "device_offline")
+            create_command(connection, user["id"], device_no, "watering.config.set", {"config": config}, "failed", "device_offline")
             return fail("DEVICE_OFFLINE", "设备离线，无法保存")
         current_time = now_ms()
-        create_command(connection, user["id"], device_no, "watering.saveConfig", {"config": config})
+        next_version = int(device.get("desired_config_version") or 0) + 1
+        config_hash = stable_hash(config)
+        command_payload = {"configVersion": next_version, "configHash": config_hash, "config": config}
+        command_id = create_command(connection, user["id"], device_no, "watering.config.set", command_payload, "queued")
         connection.execute(
             """
-            UPDATE device_registry SET config_json = ?, last_synced_at = ?, updated_at = ? WHERE device_no = ?
+            UPDATE device_registry
+            SET config_json = ?, config_state = 'pending', desired_config_json = ?,
+                desired_config_version = ?, desired_config_hash = ?, pending_command_id = ?,
+                last_synced_at = NULL, updated_at = ?
+            WHERE device_no = ?
             """,
-            (json_dumps(config), current_time, current_time, device_no),
+            (json_dumps(config), json_dumps(config), next_version, config_hash, command_id, current_time, device_no),
         )
-        return ok({"config": config, "syncedAt": current_time, "status": "在线", "online": True}, "已同步")
+        response = ok(
+            {
+                "accepted": True,
+                "commandId": command_id,
+                "commandStatus": "queued",
+                "command": public_command_response(connection, command_id),
+                "config": config,
+                "desiredConfig": config,
+                "desiredConfigVersion": next_version,
+                "desiredConfigHash": config_hash,
+                "configState": "pending",
+                "pendingCommandId": command_id,
+                "status": get_display_status(device),
+                "online": True,
+            },
+            "配置命令已接受，等待设备确认",
+        )
+        response["code"] = "COMMAND_ACCEPTED"
+        return response
 
 
 def watering_start_manual(data: dict[str, Any]) -> dict[str, Any]:
@@ -2000,21 +2670,44 @@ def watering_start_manual(data: dict[str, Any]) -> dict[str, Any]:
         if forbidden:
             return forbidden
         if device["status"] != "registered":
-            create_command(connection, user["id"], device_no, "watering.startManual", {"durationSeconds": duration_seconds}, "failed", "device_disabled")
+            create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
+        capabilities = device_capability_view(device)["capabilities"]
+        if not watering_feature_supported(capabilities, "manualWatering"):
+            create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "feature_unsupported")
+            return fail("FEATURE_UNSUPPORTED", "设备不支持手动浇水")
+        duration_rules = feature_param_rules(capabilities, "manualWatering").get("durationSeconds", {})
+        min_duration = int(duration_rules.get("min", 1)) if isinstance(duration_rules, dict) else 1
+        max_duration = int(duration_rules.get("max", 3600)) if isinstance(duration_rules, dict) else 3600
+        if duration_seconds < min_duration or duration_seconds > max_duration:
+            return fail("INVALID_CONFIG", f"浇水秒数范围为{min_duration}-{max_duration}秒")
         if not device["online"]:
-            create_command(connection, user["id"], device_no, "watering.startManual", {"durationSeconds": duration_seconds}, "failed", "device_offline")
+            create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "device_offline")
             return fail("DEVICE_OFFLINE", "设备离线，无法下发")
         current_time = now_ms()
-        last_watering_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(current_time / 1000))
-        create_command(connection, user["id"], device_no, "watering.startManual", {"durationSeconds": duration_seconds})
-        connection.execute(
-            """
-            UPDATE device_registry SET display_status = '浇水中', last_watering_at = ?, last_synced_at = ?, updated_at = ? WHERE device_no = ?
-            """,
-            (last_watering_at, current_time, current_time, device_no),
+        command_id = create_command(
+            connection,
+            user["id"],
+            device_no,
+            "watering.manual.start",
+            {"durationSeconds": duration_seconds},
+            "queued",
+            ttl_seconds=duration_seconds + 10,
         )
-        return ok({"status": "浇水中", "online": True, "lastWateringAt": last_watering_at, "syncedAt": current_time, "durationSeconds": duration_seconds})
+        response = ok(
+            {
+                "accepted": True,
+                "commandId": command_id,
+                "commandStatus": "queued",
+                "command": public_command_response(connection, command_id),
+                "status": get_display_status(device),
+                "online": True,
+                "durationSeconds": duration_seconds,
+            },
+            "手动浇水命令已接受，等待设备执行",
+        )
+        response["code"] = "COMMAND_ACCEPTED"
+        return response
 
 
 def watering_stop_manual(data: dict[str, Any]) -> dict[str, Any]:
@@ -2030,18 +2723,30 @@ def watering_stop_manual(data: dict[str, Any]) -> dict[str, Any]:
         if forbidden:
             return forbidden
         if device["status"] != "registered":
-            create_command(connection, user["id"], device_no, "watering.stopManual", {}, "failed", "device_disabled")
+            create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
+        capabilities = device_capability_view(device)["capabilities"]
+        if not watering_feature_supported(capabilities, "manualWatering"):
+            create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "feature_unsupported")
+            return fail("FEATURE_UNSUPPORTED", "设备不支持手动浇水")
         if not device["online"]:
-            create_command(connection, user["id"], device_no, "watering.stopManual", {}, "failed", "device_offline")
+            create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "device_offline")
             return fail("DEVICE_OFFLINE", "设备离线，无法下发")
         current_time = now_ms()
-        create_command(connection, user["id"], device_no, "watering.stopManual", {})
-        connection.execute(
-            "UPDATE device_registry SET display_status = '在线', last_synced_at = ?, updated_at = ? WHERE device_no = ?",
-            (current_time, current_time, device_no),
+        command_id = create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "queued")
+        response = ok(
+            {
+                "accepted": True,
+                "commandId": command_id,
+                "commandStatus": "queued",
+                "command": public_command_response(connection, command_id),
+                "status": get_display_status(device),
+                "online": True,
+            },
+            "停止浇水命令已接受，等待设备执行",
         )
-        return ok({"status": "在线", "online": True, "syncedAt": current_time})
+        response["code"] = "COMMAND_ACCEPTED"
+        return response
 
 
 def admin_overview(data: dict[str, Any]) -> dict[str, Any]:
@@ -2728,15 +3433,17 @@ def admin_device_force_unbind(data: dict[str, Any]) -> dict[str, Any]:
             return fail("DEVICE_NOT_FOUND", "设备不存在")
         old_owner_user_id = device["owner_user_id"]
         current_time = now_ms()
-        reset_config = default_watering_config() if device["device_type"] == "watering" else {}
         connection.execute(
             """
             UPDATE device_registry
-            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, config_json = ?,
+            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, config_json = '{}',
+                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
+                desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
+                applied_config_hash = NULL, pending_command_id = NULL,
                 last_watering_at = '--', last_synced_at = NULL, display_status = ?, updated_at = ?
             WHERE device_no = ?
             """,
-            (device["type_label"], json_dumps(reset_config), "在线" if device["online"] else "离线", current_time, device_no),
+            (device["type_label"], "在线" if device["online"] else "离线", current_time, device_no),
         )
         record_bind_event(connection, device_no, old_owner_user_id, "admin_unbind", "success", reason)
         record_admin_event(connection, data, "admin.device.forceUnbind", "device", device_no, "success", reason, {"oldOwnerUserId": old_owner_user_id})
@@ -2798,10 +3505,12 @@ HANDLERS = {
     "device.prepareConfigure": device_prepare_configure,
     "device.checkProvisionStatus": device_check_provision_status,
     "device.secureMessage": device_secure_message,
+    "device.pullCommands": device_secure_message,
     "device.bind": device_bind,
     "device.unbind": device_unbind,
     "device.list": device_list,
     "device.getStatus": device_get_status,
+    "device.getCommandStatus": device_get_command_status,
     "watering.saveConfig": watering_save_config,
     "watering.startManual": watering_start_manual,
     "watering.stopManual": watering_stop_manual,

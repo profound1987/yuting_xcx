@@ -21,11 +21,14 @@ const PROVISION_WRITE_UUID = "0000FFF1-0000-1000-8000-00805F9B34FB";
 const PROVISION_NOTIFY_UUID = "0000FFF2-0000-1000-8000-00805F9B34FB";
 const DEFAULT_PROVISION_POLL_INTERVAL_MS = 2000;
 const DEFAULT_PROVISION_TIMEOUT_MS = 120000;
+const DEFAULT_CLOUD_ONLINE_TIMEOUT_MS = 45000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30000;
 const DEFAULT_WIFI_STATUS_TIMEOUT_MS = 60000;
 const DEFAULT_DEVICE_VERIFY_TIMEOUT_MS = 3000;
 const BLE_DEVICE_TTL_MS = 8000;
 const BLE_INVALID_RSSI = 0;
+const BLE_WRITE_CHUNK_SIZE = 20;
+const BLE_WRITE_CHUNK_DELAY_MS = 50;
 
 function createCrc32Table() {
   const table = [];
@@ -106,12 +109,7 @@ function setStoredDevices(phone, devices) {
 }
 
 function createWateringConfig() {
-  return {
-    mode: "demand",
-    demand: { intervalHours: 4, threshold: 35, durationSeconds: 20 },
-    schedule: { intervalDays: 1, times: 2, durationSeconds: 30 },
-    manual: { durationSeconds: 10 },
-  };
+  return {};
 }
 
 function createDeviceFromRemote(parsed, deviceName, remoteDevice) {
@@ -141,7 +139,16 @@ function createDeviceFromRemote(parsed, deviceName, remoteDevice) {
     lastBootAt: device.lastBootAt || null,
     lastSeenAt: device.lastSeenAt || null,
     telemetry: device.telemetry || {},
-    syncState: device.syncState || (device.online === false ? "offline" : "synced"),
+    runtimeState: device.runtimeState || {},
+    capabilityState: device.capabilityState || (device.capabilities ? "reported" : "pending"),
+    capabilities: device.capabilities || {},
+    configState: device.configState || "unconfigured",
+    desiredConfig: device.desiredConfig || null,
+    desiredConfigVersion: device.desiredConfigVersion || 0,
+    appliedConfig: device.appliedConfig || null,
+    appliedConfigVersion: device.appliedConfigVersion || 0,
+    pendingCommandId: device.pendingCommandId || "",
+    syncState: device.syncState || (device.online === false ? "offline" : (device.configState || "unconfigured")),
     config: type === "watering" ? (device.config || createWateringConfig()) : (device.config || {}),
   };
 }
@@ -174,7 +181,7 @@ function toBufferChunks(bytes, chunkSize) {
 
 function encodePayloadChunks(payload) {
   const bytes = stringToUtf8Bytes(`${JSON.stringify(payload)}\n`);
-  return toBufferChunks(bytes, 20);
+  return toBufferChunks(bytes, BLE_WRITE_CHUNK_SIZE);
 }
 
 function delay(ms) {
@@ -461,6 +468,8 @@ Page({
     wifiManualSsid: "",
     wifiPassword: "",
     wifiPasswordVisible: false,
+    sendingWifi: false,
+    configuring: false,
     sessionDevBypass: false,
     statusMessage: "请先确认设备号和设备名称，然后开始配置。",
     statusType: "info",
@@ -567,6 +576,9 @@ Page({
   },
 
   async startConfigure() {
+    if (this.data.configuring) {
+      return;
+    }
     const parsed = parseDeviceNo(this.data.deviceNo);
     if (!parsed.valid) {
       this.setStatus(parsed.message, "error");
@@ -589,8 +601,10 @@ Page({
     this.cleanupBleStatusNotify();
     this.closeCurrentBleConnection();
     this.stopBleDiscovery();
+    this.wifiProvisionWriteInProgress = false;
 
     this.setData({
+      configuring: true,
       parsedDevice: parsed,
       bleDevices: [],
       selectedBleDevice: null,
@@ -601,6 +615,7 @@ Page({
       wifiManualSsid: "",
       wifiPassword: "",
       wifiPasswordVisible: false,
+      sendingWifi: false,
     });
     this.resetSteps();
     this.setStep("check", "active");
@@ -618,6 +633,7 @@ Page({
     wx.hideLoading();
 
     if (!this.handlePrepareResponse(prepareResp, prepareError)) {
+      this.finishConfigureFlow();
       return;
     }
 
@@ -848,6 +864,7 @@ Page({
       wx.closeBLEConnection({ deviceId });
     } catch (error) {}
     this.connectedBleDeviceId = null;
+    this.wifiProvisionWriteInProgress = false;
   },
 
   removeBleDevice(deviceId) {
@@ -899,7 +916,8 @@ Page({
   },
 
   closeWifiDialog() {
-    this.setData({ showWifiDialog: false });
+    this.wifiProvisionWriteInProgress = false;
+    this.setData({ showWifiDialog: false, sendingWifi: false, configuring: false });
   },
 
   connectBleDevice(device) {
@@ -1059,6 +1077,8 @@ Page({
       return;
     }
     if (status === "failed") {
+      this.wifiProvisionWriteInProgress = false;
+      this.setData({ sendingWifi: false });
       const error = new Error(getBleWifiStatusError(payload));
       error.code = normalizeProvisionErrorCode(payload.code || "WIFI_FAILED");
       error.provisionMessage = getBleWifiStatusError(payload);
@@ -1206,18 +1226,26 @@ Page({
   },
 
   async sendWifiToDevice() {
+    if (this.data.sendingWifi || this.wifiProvisionWriteInProgress) {
+      return;
+    }
+    this.wifiProvisionWriteInProgress = true;
+
     const ssid = this.getEffectiveWifiSsid() || (apiConfig.mode === "mock" ? "Mock-WiFi" : "");
     if (!ssid && apiConfig.mode !== "mock") {
+      this.wifiProvisionWriteInProgress = false;
       this.setStatus(getProvisionErrorMessage(this.data.wifiManualMode ? "WIFI_SSID_REQUIRED" : "WIFI_NOT_CONNECTED"), "error");
       return;
     }
     if (!this.data.wifiPassword) {
+      this.wifiProvisionWriteInProgress = false;
       this.setStatus(getProvisionErrorMessage("WIFI_PASSWORD_REQUIRED"), "error");
       return;
     }
 
     const prepareData = this.data.prepareData || {};
     if (!prepareData.provisionSessionId) {
+      this.wifiProvisionWriteInProgress = false;
       this.setStatus("缺少配网会话，请返回重新开始配置。", "error");
       return;
     }
@@ -1228,26 +1256,26 @@ Page({
       apiUrl: `${apiConfig.baseUrl}${apiConfig.httpPath || "/api"}`,
       secureProtocol: "YTS-SEC/1-AES-128-CCM",
       heartbeatIntervalMs: getHeartbeatIntervalMs(prepareData),
-      statusNotify: {
-        serviceUuid: PROVISION_SERVICE_UUID,
-        characteristicUuid: PROVISION_NOTIFY_UUID,
-        format: "json-lines",
-      },
       ssid,
       password: this.data.wifiPassword,
       ts: Date.now(),
     };
 
+    this.setData({ sendingWifi: true });
     this.setStatus("正在通过 BLE 发送 Wi‑Fi 信息...", "info");
     this.setStep("wifi", "active");
 
     if (apiConfig.mode === "mock") {
       await this.completeMockProvision();
+      this.wifiProvisionWriteInProgress = false;
+      this.setData({ sendingWifi: false });
       return;
     }
 
     const device = this.data.selectedBleDevice;
     if (!device) {
+      this.wifiProvisionWriteInProgress = false;
+      this.setData({ sendingWifi: false });
       this.setStatus(getProvisionErrorMessage("BLE_CONNECT_FAILED"), "error");
       return;
     }
@@ -1261,6 +1289,8 @@ Page({
       this.setStatus("设备已连接 Wi‑Fi，正在等待云端认证...", "info");
       this.waitCloudOnline();
     } catch (error) {
+      this.wifiProvisionWriteInProgress = false;
+      this.setData({ sendingWifi: false });
       this.setStep("wifi", "error");
       const message = error && error.provisionMessage
         ? error.provisionMessage
@@ -1272,6 +1302,7 @@ Page({
 
   async writeBlePayload(deviceId, payload) {
     const chunks = encodePayloadChunks(payload);
+    console.log("[BLE] write payload", { type: payload && payload.type, bytes: stringToUtf8Bytes(`${JSON.stringify(payload)}\n`).length, chunks: chunks.length });
     for (let index = 0; index < chunks.length; index += 1) {
       await new Promise((resolve, reject) => {
         wx.writeBLECharacteristicValue({
@@ -1283,7 +1314,7 @@ Page({
           fail: reject,
         });
       });
-      await delay(30);
+      await delay(BLE_WRITE_CHUNK_DELAY_MS);
     }
   },
 
@@ -1309,7 +1340,8 @@ Page({
     }
 
     const startedAt = Date.now();
-    const timeoutMs = Number(prepareData.timeoutMs) || DEFAULT_PROVISION_TIMEOUT_MS;
+    const serverTimeoutMs = Number(prepareData.timeoutMs) || DEFAULT_PROVISION_TIMEOUT_MS;
+    const timeoutMs = Math.min(serverTimeoutMs, DEFAULT_CLOUD_ONLINE_TIMEOUT_MS);
     const pollIntervalMs = Number(prepareData.pollIntervalMs) || DEFAULT_PROVISION_POLL_INTERVAL_MS;
     let lastResp = null;
 
@@ -1339,8 +1371,10 @@ Page({
         return;
       }
 
-      this.setStatus("正在等待设备上线，请保持设备和路由器通电联网...", "info");
-      await delay(pollIntervalMs);
+      const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+      const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
+      this.setStatus(`正在等待设备上线（约剩余 ${remainingSeconds} 秒），请确认路由器可访问互联网...`, "info");
+      await delay(Math.min(pollIntervalMs, remainingMs));
     }
 
     this.setStep("cloud", "error");
@@ -1394,7 +1428,18 @@ Page({
   },
 
   setStatus(statusMessage, statusType) {
-    this.setData({ statusMessage, statusType });
+    const updates = { statusMessage, statusType };
+    if (statusType === "error" || statusType === "success") {
+      updates.configuring = false;
+      updates.sendingWifi = false;
+      this.wifiProvisionWriteInProgress = false;
+    }
+    this.setData(updates);
+  },
+
+  finishConfigureFlow() {
+    this.wifiProvisionWriteInProgress = false;
+    this.setData({ configuring: false, sendingWifi: false });
   },
 
   resetSteps() {

@@ -140,6 +140,16 @@ CREATE TABLE IF NOT EXISTS device_registry (
   last_seen_at INTEGER,
   last_telemetry_at INTEGER,
   telemetry_json TEXT NOT NULL DEFAULT '{}',
+  capability_state TEXT NOT NULL DEFAULT 'pending',
+  capabilities_json TEXT NOT NULL DEFAULT '{}',
+  config_state TEXT NOT NULL DEFAULT 'unconfigured',
+  desired_config_json TEXT,
+  desired_config_version INTEGER NOT NULL DEFAULT 0,
+  desired_config_hash TEXT,
+  applied_config_json TEXT,
+  applied_config_version INTEGER NOT NULL DEFAULT 0,
+  applied_config_hash TEXT,
+  pending_command_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(owner_user_id) REFERENCES users(id)
@@ -234,13 +244,19 @@ CREATE TABLE IF NOT EXISTS device_commands (
   status TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   sent_at INTEGER,
+  received_at INTEGER,
+  executing_at INTEGER,
   ack_at INTEGER,
-  failed_reason TEXT
+  expires_at INTEGER,
+  failed_reason TEXT,
+  result_code TEXT,
+  result_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_commands_device ON device_commands(device_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_device_commands_user ON device_commands(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_device_commands_type ON device_commands(command_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(device_no, status, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS admin_audit_events (
   id TEXT PRIMARY KEY,
@@ -279,6 +295,22 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "device_registry", "last_seen_at", "INTEGER")
     add_column_if_missing(connection, "device_registry", "last_telemetry_at", "INTEGER")
     add_column_if_missing(connection, "device_registry", "telemetry_json", "TEXT NOT NULL DEFAULT '{}'")
+    add_column_if_missing(connection, "device_registry", "capability_state", "TEXT NOT NULL DEFAULT 'pending'")
+    add_column_if_missing(connection, "device_registry", "capabilities_json", "TEXT NOT NULL DEFAULT '{}'")
+    add_column_if_missing(connection, "device_registry", "config_state", "TEXT NOT NULL DEFAULT 'unconfigured'")
+    add_column_if_missing(connection, "device_registry", "desired_config_json", "TEXT")
+    add_column_if_missing(connection, "device_registry", "desired_config_version", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "device_registry", "desired_config_hash", "TEXT")
+    add_column_if_missing(connection, "device_registry", "applied_config_json", "TEXT")
+    add_column_if_missing(connection, "device_registry", "applied_config_version", "INTEGER NOT NULL DEFAULT 0")
+    add_column_if_missing(connection, "device_registry", "applied_config_hash", "TEXT")
+    add_column_if_missing(connection, "device_registry", "pending_command_id", "TEXT")
+    add_column_if_missing(connection, "device_commands", "received_at", "INTEGER")
+    add_column_if_missing(connection, "device_commands", "executing_at", "INTEGER")
+    add_column_if_missing(connection, "device_commands", "expires_at", "INTEGER")
+    add_column_if_missing(connection, "device_commands", "result_code", "TEXT")
+    add_column_if_missing(connection, "device_commands", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(device_no, status, created_at ASC)")
 
 
 def init_db() -> None:

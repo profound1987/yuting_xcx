@@ -11,7 +11,7 @@
     </view>
     <view class="hero-grid">
       <view class="hero-item">
-        <view class="hero-label">当前模式</view>
+        <view class="hero-label">当前功能</view>
         <view class="hero-value">{{modeText}}</view>
       </view>
       <view class="hero-item">
@@ -19,61 +19,83 @@
         <view class="hero-value small">{{device.lastWateringAt}}</view>
       </view>
       <view class="hero-item">
-        <view class="hero-label">同步状态</view>
+        <view class="hero-label">配置状态</view>
         <view class="hero-value small {{canEdit ? '' : 'muted'}}">{{syncText}}</view>
       </view>
     </view>
   </view>
 
   <block wx:if="{{device.type === 'watering'}}">
-    <view class="mode-tabs">
-      <view wx:for="{{modeTabs}}" wx:key="value" data-mode="{{item.value}}" class="mode-tab {{device.config.mode === item.value ? 'active' : ''}} {{!canEdit || manualRunning ? 'disabled' : ''}}" bindtap="selectMode">{{item.label}}</view>
+    <view class="notice-panel" wx:if="{{!capabilityReady}}">
+      <view class="notice-title">等待设备能力上报</view>
+      <view class="notice-text">页面会根据设备真实能力展示可用功能；若设备刚配网，请稍后同步。</view>
     </view>
 
-    <view class="config-panel" wx:if="{{device.config.mode === 'demand'}}">
-      <view class="section-title">按需浇水</view>
+    <view class="notice-panel" wx:if="{{capabilityReady && device.configState === 'unconfigured'}}">
+      <view class="notice-title">设备尚未配置</view>
+      <view class="notice-text">输入框为空表示云端没有真实配置，请按需填写后保存。</view>
+    </view>
+
+    <view class="notice-panel warning" wx:if="{{device.configState === 'pending'}}">
+      <view class="notice-title">配置命令已接受</view>
+      <view class="notice-text">正在等待设备拉取并确认应用配置，确认后状态会变为已同步。</view>
+    </view>
+
+    <view class="notice-panel danger" wx:if="{{device.configState === 'failed'}}">
+      <view class="notice-title">配置同步失败</view>
+      <view class="notice-text">请检查设备在线状态后重新保存。</view>
+    </view>
+
+    <view class="mode-tabs" wx:if="{{hasFeatureTabs}}">
+      <view wx:for="{{featureTabs}}" wx:key="value" data-feature="{{item.value}}" class="mode-tab {{selectedFeature === item.value ? 'active' : ''}} {{!canEdit || manualRunning || commandBusy ? 'disabled' : ''}}" bindtap="selectFeature">{{item.label}}</view>
+    </view>
+
+    <view class="config-panel" wx:if="{{selectedFeature === 'demandWatering'}}">
+      <view class="section-head">
+        <view class="section-title">按需浇水</view>
+      </view>
       <view class="fill-sentence">
         土壤湿度传感器每
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.demand.intervalHours}}" data-section="demand" data-field="intervalHours" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.demandWatering.checkIntervalHours}}" placeholder="" data-feature="demandWatering" data-field="checkIntervalHours" bindinput="onConfigInput" />
         小时检测一次，当湿度小于
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.demand.threshold}}" data-section="demand" data-field="threshold" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.demandWatering.thresholdPercent}}" placeholder="" data-feature="demandWatering" data-field="thresholdPercent" bindinput="onConfigInput" />
         % 时，开始浇水，每次浇水
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.demand.durationSeconds}}" data-section="demand" data-field="durationSeconds" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.demandWatering.durationSeconds}}" placeholder="" data-feature="demandWatering" data-field="durationSeconds" bindinput="onConfigInput" />
         秒钟。
       </view>
     </view>
 
-    <view class="config-panel" wx:if="{{device.config.mode === 'schedule'}}">
-      <view class="section-title">定期浇水</view>
+    <view class="config-panel" wx:if="{{selectedFeature === 'scheduleWatering'}}">
+      <view class="section-head">
+        <view class="section-title">定期浇水</view>
+      </view>
       <view class="fill-sentence">
         每
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.schedule.intervalDays}}" data-section="schedule" data-field="intervalDays" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.scheduleWatering.intervalDays}}" placeholder="" data-feature="scheduleWatering" data-field="intervalDays" bindinput="onConfigInput" />
         天浇
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.schedule.times}}" data-section="schedule" data-field="times" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.scheduleWatering.timesPerDay}}" placeholder="" data-feature="scheduleWatering" data-field="timesPerDay" bindinput="onConfigInput" />
         次水，每次浇水
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.schedule.durationSeconds}}" data-section="schedule" data-field="durationSeconds" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{configDraft.features.scheduleWatering.durationSeconds}}" placeholder="" data-feature="scheduleWatering" data-field="durationSeconds" bindinput="onConfigInput" />
         秒钟。
       </view>
     </view>
 
-    <view class="config-panel" wx:if="{{device.config.mode === 'manual'}}">
-      <view class="section-title">手动浇水</view>
+    <view class="config-panel" wx:if="{{selectedFeature === 'manualWatering'}}">
+      <view class="section-head">
+        <view class="section-title">手动浇水</view>
+      </view>
       <view class="fill-sentence compact">
         浇水
-        <input class="inline-input {{!canEdit ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning}}" type="number" value="{{device.config.manual.durationSeconds}}" data-section="manual" data-field="durationSeconds" bindinput="onNumberInput" />
+        <input class="inline-input {{!canEdit || commandBusy ? 'readonly' : ''}}" disabled="{{!canEdit || manualRunning || commandBusy}}" type="number" value="{{manualDuration}}" placeholder="" bindinput="onManualDurationInput" />
         秒钟。
       </view>
-      <view class="run-box" wx:if="{{manualRunning}}">
-        <view class="run-label">剩余 {{manualLeft}} 秒</view>
-        <progress percent="{{(device.config.manual.durationSeconds - manualLeft) * 100 / device.config.manual.durationSeconds}}" activeColor="#1f8f68" backgroundColor="#dce8e2" stroke-width="6" />
-      </view>
       <view class="manual-actions">
-        <view class="primary-button {{!canEdit ? 'disabled' : ''}}" wx:if="{{!manualRunning}}" bindtap="startManualWatering">开始浇水</view>
-        <view class="danger-button {{!canEdit ? 'disabled' : ''}}" wx:if="{{manualRunning}}" bindtap="stopManualWatering">停止浇水</view>
+        <view class="primary-button {{!canEdit || commandBusy ? 'disabled' : ''}}" wx:if="{{!manualRunning}}" bindtap="startManualWatering">{{commandBusy ? '执行中...' : '开始浇水'}}</view>
+        <view class="danger-button {{!canEdit || commandBusy ? 'disabled' : ''}}" wx:if="{{manualRunning}}" bindtap="stopManualWatering">{{commandBusy ? '执行中...' : '停止浇水'}}</view>
       </view>
     </view>
 
-    <view class="save-button {{!canEdit || manualRunning ? 'disabled' : ''}}" bindtap="saveConfig">保存设置</view>
+    <view class="save-button {{!canSaveConfig || manualRunning || commandBusy ? 'disabled' : ''}}" wx:if="{{selectedIsAuto}}" bindtap="saveConfig">{{commandBusy ? '执行中...' : '保存设置'}}</view>
   </block>
 
   <view class="config-panel" wx:else>
@@ -85,6 +107,25 @@
     <view class="info-row">
       <view class="info-label">设备号</view>
       <view class="info-value">{{device.deviceNo}}</view>
+    </view>
+  </view>
+
+  <view class="command-mask" wx:if="{{commandDialogVisible}}">
+    <view class="command-dialog">
+      <view class="command-icon {{commandDialogStatus}}">
+        <text wx:if="{{commandDialogStatus === 'success'}}">✓</text>
+        <text wx:elif="{{commandDialogStatus === 'failed'}}">×</text>
+      </view>
+      <view class="command-title {{commandDialogStatus}}">{{commandDialogTitle}}</view>
+      <view class="command-text">{{commandDialogText}}</view>
+      <progress percent="{{commandDialogProgress}}" activeColor="{{commandDialogColor}}" backgroundColor="#dce8e2" stroke-width="6" />
+      <view class="command-countdown" wx:if="{{commandCountdownVisible}}">{{commandCountdownText}}</view>
+      <view class="command-steps">
+        <view class="command-step {{commandDialogProgress >= 33 ? 'active' : ''}} {{commandDialogStatus}}">已提交给服务器</view>
+        <view class="command-step {{commandDialogProgress >= 66 ? 'active' : ''}} {{commandDialogStatus}}">设备已接收</view>
+        <view class="command-step {{commandDialogProgress >= 100 ? 'active' : ''}} {{commandDialogStatus}}">设备已完成</view>
+      </view>
+      <view class="command-close {{commandDialogClosable ? '' : 'disabled'}}" bindtap="closeCommandDialog">{{commandDialogClosable ? '知道了' : '执行中，请稍候'}}</view>
     </view>
   </view>
 </view>

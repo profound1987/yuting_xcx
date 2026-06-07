@@ -182,12 +182,13 @@ const API_CONFIG = {
 | 设备 | `device.unbind` | 当前用户解除设备绑定并清理该设备在当前账号下的数据 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.getStatus` | 查询设备在线状态和传感器数据 |
-| 设备通信 | `device.secureMessage` | 接收设备 `YTS-SEC/1` AES-128-CCM 安全消息，按 `msgType` 处理 `provision.result`、遥测、ACK |
-| 浇水 | `watering.saveConfig` | 保存浇水模式并生成设备同步指令 |
-| 浇水 | `watering.startManual` | 下发手动浇水指令 |
-| 浇水 | `watering.stopManual` | 下发停止手动浇水指令 |
+| 设备通信 | `device.secureMessage` | 接收设备 `YTS-SEC/1` AES-128-CCM 安全消息，按 `msgType` 处理 `provision.result`、遥测、`command.pull`、`command.ack` |
+| 设备通信 | `device.getCommandStatus` | 小程序查询云端命令状态 |
+| 浇水 | `watering.saveConfig` | 保存期望配置并生成 `watering.config.set` 命令，返回 `COMMAND_ACCEPTED` 和 `commandId` |
+| 浇水 | `watering.startManual` | 创建手动浇水命令，返回 `COMMAND_ACCEPTED` 和 `commandId` |
+| 浇水 | `watering.stopManual` | 创建停止浇水命令，返回 `COMMAND_ACCEPTED` 和 `commandId` |
 
-后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网，并取得 `provisionSessionId`；随后通过 BLE 给设备下发 Wi-Fi 信息和 `provisionSessionId`，等待设备连接云端并通过 AES-128-CCM 认证上报 `provision.result`；小程序再调用 `device.checkProvisionStatus` 轮询，只有返回 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。`device.bind` 仍必须在后端再次确认设备已经上云、配网会话有效且状态为 `ready_to_bind`、设备未被其他用户绑定，并成功写入设备归属、创建默认配置和绑定审计记录后，才能返回成功。
+后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网，并取得 `provisionSessionId`；随后通过 BLE 给设备下发 Wi-Fi 信息和 `provisionSessionId`，等待设备连接云端并通过 AES-128-CCM 认证上报 `provision.result`；小程序再调用 `device.checkProvisionStatus` 轮询，只有返回 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。`device.bind` 仍必须在后端再次确认设备已经上云、配网会话有效且状态为 `ready_to_bind`、设备未被其他用户绑定，并成功写入设备归属和绑定审计记录后，才能返回成功；浇水设备不自动创建真实业务默认配置。
 
 `device.unbind` 必须要求当前用户拥有该设备。解除绑定前，手机端需要明确提示用户：解除绑定后，该设备的配置和本地数据会从当前账号删除。只有后端成功清理设备归属、配置、缓存状态和解绑审计记录后，手机端才从本地列表移除设备。
 
@@ -200,16 +201,16 @@ const API_CONFIG = {
 
 ## 6. 设备配置同步策略
 
-设备管理页采用“设备确认后才保存”的策略：
+设备管理页采用“命令接受后轮询设备确认”的策略：
 
-- 进入详情页时调用 `device.getStatus`，同步在线状态、设备配置和最近同步时间。
+- 进入详情页时调用 `device.getStatus`，同步在线状态、设备能力、期望配置、已应用配置和最近同步时间。
 - 设备离线时，手机端只展示当前缓存配置，不允许编辑参数、保存配置或下发手动浇水指令。
 - 设备在线时，用户可以编辑配置；点击保存后调用 `watering.saveConfig`。
-- `watering.saveConfig` 必须在服务端成功把配置发送给设备，并收到设备或网关确认后，才返回 `success: true`。
-- 手机端只有收到成功响应后，才更新本地缓存和“已同步”状态。
-- 如果设备离线、指令超时或设备返回失败，服务端返回失败，手机端不把本地表单内容记为已保存。
-- 手动浇水同理，只有 `watering.startManual` 返回成功后，手机端才进入倒计时和“浇水中”状态。
-- 手机端重新进入详情页时，如果远端返回的配置同步时间早于本地已保存同步时间，不能用旧配置覆盖本地已确认保存的配置。
+- `watering.saveConfig` 成功只表示服务端已创建命令并返回 `COMMAND_ACCEPTED` 和 `commandId`，不表示设备已执行。
+- 手机端必须调用 `device.getCommandStatus` 轮询；命令 `succeeded` 后才展示“已同步”。
+- 如果设备离线、指令超时或设备返回失败，服务端返回相应状态，手机端不把本地表单内容记为已应用。
+- 手动浇水同理，只有 `watering.startManual` 对应命令 `succeeded` 或遥测 `pumpOn=true` 后，手机端才进入倒计时和“浇水中”状态。
+- 手机端重新进入详情页时，以 `device.getStatus` 返回的 `desiredConfig`、`appliedConfig` 和 `configState` 为准。
 
 ## 7. 设备通信建议
 

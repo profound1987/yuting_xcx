@@ -91,22 +91,97 @@ function parseDeviceNo(value) {
 }
 
 function createWateringConfig() {
+  return {};
+}
+
+function createWateringCapabilities() {
   return {
-    mode: "demand",
-    demand: {
-      intervalHours: 4,
-      threshold: 35,
-      durationSeconds: 20,
+    schemaVersion: 1,
+    model: "YT-AW-BASIC-SM",
+    hwVersion: "mock",
+    fwVersion: "mock",
+    components: {
+      waterPump: { present: true, channels: 1, feedback: "none" },
+      soilMoistureSensor: { present: true, valueType: "percent", range: { min: 0, max: 100 }, calibratable: true },
+      waterLevelSensor: { present: false },
+      rtc: { present: false },
+      localStorage: { present: true, persistentConfig: true },
     },
-    schedule: {
-      intervalDays: 1,
-      times: 2,
-      durationSeconds: 30,
-    },
-    manual: {
-      durationSeconds: 10,
+    features: {
+      manualWatering: {
+        supported: true,
+        label: "手动浇水",
+        commands: ["watering.manual.start", "watering.manual.stop"],
+        params: {
+          durationSeconds: { type: "integer", unit: "s", required: true, min: 1, max: 3600, recommended: 10, default: null },
+        },
+      },
+      scheduleWatering: {
+        supported: true,
+        label: "定期浇水",
+        requires: ["waterPump", "localStorage"],
+        params: {
+          intervalDays: { type: "integer", unit: "day", required: true, min: 1, max: 365, recommended: 1, default: null },
+          timesPerDay: { type: "integer", unit: "count", required: true, min: 1, max: 24, recommended: 2, default: null },
+          durationSeconds: { type: "integer", unit: "s", required: true, min: 1, max: 3600, recommended: 30, default: null },
+        },
+      },
+      demandWatering: {
+        supported: true,
+        label: "按需浇水",
+        requires: ["waterPump", "soilMoistureSensor", "localStorage"],
+        params: {
+          checkIntervalHours: { type: "integer", unit: "hour", required: true, min: 1, max: 72, recommended: 4, default: null },
+          thresholdPercent: { type: "integer", unit: "%", required: true, min: 1, max: 100, recommended: 35, default: null },
+          durationSeconds: { type: "integer", unit: "s", required: true, min: 1, max: 3600, recommended: 20, default: null },
+        },
+      },
+      waterTankProtection: { supported: false, label: "缺水保护", requires: ["waterLevelSensor"] },
     },
   };
+}
+
+function createGenericCapabilities() {
+  return { schemaVersion: 1, components: {}, features: {} };
+}
+
+function defaultCapabilitiesForType(type) {
+  return type === "watering" ? createWateringCapabilities() : createGenericCapabilities();
+}
+
+function emptyConfigState() {
+  return {
+    config: {},
+    configState: "unconfigured",
+    desiredConfig: null,
+    desiredConfigVersion: 0,
+    desiredConfigHash: "",
+    appliedConfig: null,
+    appliedConfigVersion: 0,
+    appliedConfigHash: "",
+    pendingCommandId: "",
+  };
+}
+
+function ensureRecordShape(record) {
+  if (!record) {
+    return record;
+  }
+  if (!record.capabilities) {
+    record.capabilities = defaultCapabilitiesForType(record.type);
+  }
+  if (!record.capabilityState) {
+    record.capabilityState = "reported";
+  }
+  if (!record.configState) {
+    Object.assign(record, emptyConfigState());
+  }
+  if (record.type === "watering" && record.configState === "unconfigured") {
+    record.config = {};
+    record.desiredConfig = null;
+    record.appliedConfig = null;
+  }
+  return record;
 }
 
 function getScenario(serialNumber) {
@@ -150,7 +225,17 @@ function createMockRecord(typeInfo, serialNumber) {
     mockScenario: scenario,
     online,
     displayStatus: online ? "在线" : "离线",
-    config: typeInfo.value === "watering" ? createWateringConfig() : {},
+    config: {},
+    configState: "unconfigured",
+    desiredConfig: null,
+    desiredConfigVersion: 0,
+    desiredConfigHash: "",
+    appliedConfig: null,
+    appliedConfigVersion: 0,
+    appliedConfigHash: "",
+    pendingCommandId: "",
+    capabilityState: "reported",
+    capabilities: defaultCapabilitiesForType(typeInfo.value),
     lastWateringAt: "--",
     lastSyncedAt: null,
     createdAt: now,
@@ -172,6 +257,17 @@ function createInitialRegistry() {
 function getRegistry() {
   const registry = wx.getStorageSync(MOCK_REGISTRY_KEY);
   if (registry && Object.keys(registry).length > 0) {
+    let changed = false;
+    Object.keys(registry).forEach((key) => {
+      const before = JSON.stringify(registry[key]);
+      ensureRecordShape(registry[key]);
+      if (JSON.stringify(registry[key]) !== before) {
+        changed = true;
+      }
+    });
+    if (changed) {
+      wx.setStorageSync(MOCK_REGISTRY_KEY, registry);
+    }
     return registry;
   }
 
@@ -316,6 +412,7 @@ function getDisplayStatus(record) {
 }
 
 function createDevicePayload(record, name) {
+  ensureRecordShape(record);
   return {
     id: record.id,
     deviceNo: record.deviceNo,
@@ -330,6 +427,14 @@ function createDevicePayload(record, name) {
     ownerPhone: record.ownerPhone,
     mockScenario: record.mockScenario,
     config: clone(record.config || {}),
+    configState: record.configState || "unconfigured",
+    desiredConfig: record.desiredConfig ? clone(record.desiredConfig) : null,
+    desiredConfigVersion: record.desiredConfigVersion || 0,
+    appliedConfig: record.appliedConfig ? clone(record.appliedConfig) : null,
+    appliedConfigVersion: record.appliedConfigVersion || 0,
+    pendingCommandId: record.pendingCommandId || "",
+    capabilityState: record.capabilityState || "reported",
+    capabilities: clone(record.capabilities || defaultCapabilitiesForType(record.type)),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
     heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
@@ -349,6 +454,15 @@ function success(data) {
     success: true,
     code: "OK",
     message: "",
+    data,
+  });
+}
+
+function commandAccepted(data, message = "命令已接受") {
+  return Promise.resolve({
+    success: true,
+    code: "COMMAND_ACCEPTED",
+    message,
     data,
   });
 }
@@ -630,7 +744,7 @@ function unbindDevice(data) {
   record.ownerPhone = null;
   record.ownerUserId = null;
   record.name = record.typeLabel;
-  record.config = record.type === "watering" ? createWateringConfig() : {};
+  Object.assign(record, emptyConfigState());
   record.lastWateringAt = "--";
   record.lastSyncedAt = null;
   record.displayStatus = record.online ? "在线" : "离线";
@@ -649,12 +763,23 @@ function getStatus(data) {
   if (!record) {
     return failure("DEVICE_NOT_FOUND", "设备不存在");
   }
+  ensureRecordShape(record);
 
   return success({
     deviceNo: record.deviceNo,
+    deviceType: record.type,
     status: getDisplayStatus(record),
     online: record.online,
     config: clone(record.config || {}),
+    configState: record.configState || "unconfigured",
+    desiredConfig: record.desiredConfig ? clone(record.desiredConfig) : null,
+    desiredConfigVersion: record.desiredConfigVersion || 0,
+    appliedConfig: record.appliedConfig ? clone(record.appliedConfig) : null,
+    appliedConfigVersion: record.appliedConfigVersion || 0,
+    pendingCommandId: record.pendingCommandId || "",
+    capabilityState: record.capabilityState || "reported",
+    capabilities: clone(record.capabilities || defaultCapabilitiesForType(record.type)),
+    runtimeState: clone((record.telemetry && record.telemetry.state) || {}),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
     heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
@@ -667,27 +792,78 @@ function getStatus(data) {
   });
 }
 
+function isMockFeatureSupported(record, featureName) {
+  ensureRecordShape(record);
+  const features = record.capabilities && record.capabilities.features ? record.capabilities.features : {};
+  const feature = features[featureName] || {};
+  if (!feature.supported) {
+    return false;
+  }
+  if (featureName === "demandWatering") {
+    const components = record.capabilities && record.capabilities.components ? record.capabilities.components : {};
+    return !!(components.soilMoistureSensor && components.soilMoistureSensor.present);
+  }
+  return true;
+}
+
 function saveWateringConfig(data) {
   const { registry, record } = getRecord(data.deviceNo);
   if (!record || record.type !== "watering") {
     return failure("DEVICE_NOT_FOUND", "设备不存在");
   }
+  ensureRecordShape(record);
   if (!record.online) {
     return failure("DEVICE_OFFLINE", "设备离线，无法保存");
   }
 
   const now = Date.now();
-  record.config = clone(data.config || createWateringConfig());
+  const commandId = `mock_cmd_${now}`;
+  const config = clone(data.config || {});
+  record.config = config;
+  record.desiredConfig = config;
+  record.desiredConfigVersion = (record.desiredConfigVersion || 0) + 1;
+  record.desiredConfigHash = `mock_hash_${record.desiredConfigVersion}`;
+  record.appliedConfig = config;
+  record.appliedConfigVersion = record.desiredConfigVersion;
+  record.appliedConfigHash = record.desiredConfigHash;
+  record.configState = "synced";
+  record.pendingCommandId = commandId;
   record.lastSyncedAt = now;
   record.updatedAt = now;
   registry[record.deviceNo] = record;
   setRegistry(registry);
 
-  return success({
-    config: clone(record.config),
-    syncedAt: now,
-    status: getDisplayStatus(record),
-    online: record.online,
+  return Promise.resolve({
+    success: true,
+    code: "COMMAND_ACCEPTED",
+    message: "配置命令已接受，等待设备确认",
+    data: {
+      accepted: true,
+      commandId,
+      commandStatus: "queued",
+      command: {
+        id: commandId,
+        deviceNo: record.deviceNo,
+        commandType: "watering.config.set",
+        status: "queued",
+        statusText: "等待设备拉取",
+        terminal: false,
+        payload: { configVersion: record.desiredConfigVersion, configHash: record.desiredConfigHash, config: clone(config) },
+        createdAt: now,
+      },
+      config: clone(record.config),
+      desiredConfig: clone(record.desiredConfig),
+      desiredConfigVersion: record.desiredConfigVersion,
+      desiredConfigHash: record.desiredConfigHash,
+      appliedConfig: clone(record.appliedConfig),
+      appliedConfigVersion: record.appliedConfigVersion,
+      appliedConfigHash: record.appliedConfigHash,
+      configState: "pending",
+      pendingCommandId: record.pendingCommandId,
+      syncedAt: record.lastSyncedAt,
+      status: getDisplayStatus(record),
+      online: record.online,
+    },
   });
 }
 
@@ -696,25 +872,38 @@ function startManualWatering(data) {
   if (!record || record.type !== "watering") {
     return failure("DEVICE_NOT_FOUND", "设备不存在");
   }
+  ensureRecordShape(record);
+  if (!isMockFeatureSupported(record, "manualWatering")) {
+    return failure("FEATURE_UNSUPPORTED", "设备不支持手动浇水");
+  }
   if (!record.online) {
     return failure("DEVICE_OFFLINE", "设备离线，无法下发");
   }
 
   const now = Date.now();
-  record.displayStatus = "浇水中";
-  record.lastWateringAt = formatTime(new Date(now));
-  record.lastSyncedAt = now;
+  const commandId = `mock_cmd_${now}`;
   record.updatedAt = now;
   registry[record.deviceNo] = record;
   setRegistry(registry);
 
-  return success({
+  return commandAccepted({
+    accepted: true,
+    commandId,
+    commandStatus: "queued",
+    command: {
+      id: commandId,
+      deviceNo: record.deviceNo,
+      commandType: "watering.manual.start",
+      status: "queued",
+      statusText: "等待设备拉取",
+      terminal: false,
+      payload: { durationSeconds: data.durationSeconds },
+      createdAt: now,
+    },
     status: getDisplayStatus(record),
     online: record.online,
-    lastWateringAt: record.lastWateringAt,
-    syncedAt: now,
     durationSeconds: data.durationSeconds,
-  });
+  }, "手动浇水命令已接受，等待设备执行");
 }
 
 function stopManualWatering(data) {
@@ -722,21 +911,53 @@ function stopManualWatering(data) {
   if (!record || record.type !== "watering") {
     return failure("DEVICE_NOT_FOUND", "设备不存在");
   }
+  ensureRecordShape(record);
+  if (!isMockFeatureSupported(record, "manualWatering")) {
+    return failure("FEATURE_UNSUPPORTED", "设备不支持手动浇水");
+  }
   if (!record.online) {
     return failure("DEVICE_OFFLINE", "设备离线，无法下发");
   }
 
   const now = Date.now();
-  record.displayStatus = "在线";
-  record.lastSyncedAt = now;
+  const commandId = `mock_cmd_${now}`;
   record.updatedAt = now;
   registry[record.deviceNo] = record;
   setRegistry(registry);
 
-  return success({
+  return commandAccepted({
+    accepted: true,
+    commandId,
+    commandStatus: "queued",
+    command: {
+      id: commandId,
+      deviceNo: record.deviceNo,
+      commandType: "watering.manual.stop",
+      status: "queued",
+      statusText: "等待设备拉取",
+      terminal: false,
+      payload: {},
+      createdAt: now,
+    },
     status: getDisplayStatus(record),
     online: record.online,
-    syncedAt: now,
+  }, "停止浇水命令已接受，等待设备执行");
+}
+
+function getCommandStatus(data) {
+  return success({
+    command: {
+      id: data.commandId || data.cmdId || "mock_cmd",
+      deviceNo: data.deviceNo,
+      commandType: "mock.command",
+      status: "succeeded",
+      statusText: "执行成功",
+      terminal: true,
+      resultCode: "OK",
+      result: { applied: true },
+      ackAt: Date.now(),
+      ackAtText: formatTime(new Date()),
+    },
   });
 }
 
@@ -767,6 +988,9 @@ function mockCall(type, data) {
   }
   if (type === "device.getStatus") {
     return getStatus(data || {});
+  }
+  if (type === "device.getCommandStatus") {
+    return getCommandStatus(data || {});
   }
   if (type === "watering.saveConfig") {
     return saveWateringConfig(data || {});

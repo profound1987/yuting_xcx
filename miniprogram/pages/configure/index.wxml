@@ -20,7 +20,7 @@
       <view>设备类型：{{parsedDevice.deviceType.label}}</view>
       <view>类型码：{{parsedDevice.typeCode}} · 流水号：{{parsedDevice.serial}}</view>
     </view>
-    <view class="primary-button" bindtap="startConfigure">开始配置设备</view>
+    <view class="primary-button {{configuring ? 'disabled' : ''}}" bindtap="startConfigure">{{configuring ? '配置中...' : '开始配置设备'}}</view>
   </view>
 
   <view class="panel">
@@ -91,7 +91,7 @@
       </view>
       <view class="dialog-actions two">
         <view class="dialog-button secondary" bindtap="closeWifiDialog">取消</view>
-        <view class="dialog-button primary" bindtap="sendWifiToDevice">开始配网</view>
+        <view class="dialog-button primary {{sendingWifi ? 'disabled' : ''}}" bindtap="sendWifiToDevice">{{sendingWifi ? '发送中...' : '开始配网'}}</view>
       </view>
     </view>
   </view>

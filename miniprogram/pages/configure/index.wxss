@@ -116,6 +116,12 @@ page {
   box-shadow: 0 12rpx 22rpx rgba(8, 125, 145, 0.18);
 }
 
+.primary-button.disabled {
+  background: #c5ceca;
+  box-shadow: none;
+  pointer-events: none;
+}
+
 .step-list {
   margin-top: 20rpx;
 }
@@ -291,6 +297,11 @@ page {
 .dialog-button.primary {
   background: #087d91;
   color: #fff;
+}
+
+.dialog-button.disabled {
+  opacity: 0.48;
+  pointer-events: none;
 }
 
 .dialog-button.secondary {
