@@ -25,6 +25,13 @@ def int_env(name: str, default: int) -> int:
         return default
 
 
+def float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 class Settings:
     database_path: str = os.getenv("YT_DATABASE_PATH", "./data/yunting.db")
     dev_sms_code: str = os.getenv("YT_DEV_SMS_CODE", "123456")
@@ -46,6 +53,18 @@ class Settings:
     bind_failure_warning_threshold: int = int_env("YT_BIND_FAILURE_WARNING_THRESHOLD", 3)
     bind_failure_lock_threshold: int = int_env("YT_BIND_FAILURE_LOCK_THRESHOLD", 10)
     bind_failure_lock_hours: int = int_env("YT_BIND_FAILURE_LOCK_HOURS", 24)
+    mqtt_enabled: bool = os.getenv("YT_MQTT_ENABLED", "true").lower() == "true"
+    mqtt_host: str = os.getenv("YT_MQTT_HOST", "yutingsmarthome.xin")
+    mqtt_port: int = int_env("YT_MQTT_PORT", 8883)
+    mqtt_tls: bool = os.getenv("YT_MQTT_TLS", "true").lower() == "true"
+    mqtt_ca_file: str = os.getenv("YT_MQTT_CA_FILE", "")
+    mqtt_client_id: str = os.getenv("YT_MQTT_CLIENT_ID", "yt_cloud_worker")
+    mqtt_username: str = os.getenv("YT_MQTT_USERNAME", "")
+    mqtt_password: str = os.getenv("YT_MQTT_PASSWORD", "")
+    mqtt_device_password: str = os.getenv("YT_MQTT_DEVICE_PASSWORD", "")
+    mqtt_keepalive_seconds: int = int_env("YT_MQTT_KEEPALIVE_SECONDS", 90)
+    mqtt_poll_interval_seconds: float = float_env("YT_MQTT_POLL_INTERVAL_SECONDS", 1.0)
+    mqtt_publish_batch_size: int = int_env("YT_MQTT_PUBLISH_BATCH_SIZE", 20)
     allowed_origins: list[str] = [
         item.strip()
         for item in os.getenv("YT_ALLOWED_ORIGINS", "*").split(",")

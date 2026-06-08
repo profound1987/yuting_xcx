@@ -1,0 +1,10 @@
+user yt_cloud_service
+topic read yt/v1/devices/+/up
+topic read yt/v1/devices/+/status
+topic write yt/v1/devices/+/down
+
+# Device usernames are their deviceNo, for example YT-AW-00000-A324.
+# `%u` limits each device account to its own topics.
+pattern read yt/v1/devices/%u/down
+pattern write yt/v1/devices/%u/up
+pattern write yt/v1/devices/%u/status

@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - dependency may be absent before server r
     AESCCM = None
 
 from .database import db, json_dumps, json_loads, now_ms, row_to_dict
+from .device_mqtt import device_mqtt_config
 from .responses import fail, ok
 from .settings import get_settings
 from .sms import SmsError, send_sms_code
@@ -50,16 +51,17 @@ SECURE_PROTOCOL_VERSION = 1
 SECURE_ALG = "AES-128-CCM"
 SECURE_TAG_LENGTH = 16
 SECURE_NONCE_LENGTH = 13
-DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 1000
+DEFAULT_HEARTBEAT_INTERVAL_MS = 90 * 1000
+MQTTS_HEARTBEAT_INTERVAL_MS = 90 * 1000
 HEARTBEAT_OFFLINE_MISSED_CYCLES = 2
 MIN_HEARTBEAT_INTERVAL_MS = 10 * 1000
 MAX_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000
 HEARTBEAT_INTERVAL_BY_DEVICE_TYPE = {
-    "watering": 30 * 1000,
-    "sensor": 60 * 1000,
-    "light": 30 * 1000,
-    "socket": 30 * 1000,
-    "gateway": 30 * 1000,
+    "watering": MQTTS_HEARTBEAT_INTERVAL_MS,
+    "sensor": MQTTS_HEARTBEAT_INTERVAL_MS,
+    "light": MQTTS_HEARTBEAT_INTERVAL_MS,
+    "socket": MQTTS_HEARTBEAT_INTERVAL_MS,
+    "gateway": MQTTS_HEARTBEAT_INTERVAL_MS,
 }
 
 
@@ -1736,11 +1738,39 @@ def handle_provision_result(connection, device: dict[str, Any], session: dict[st
             "accepted": True,
             "serverTime": current_time,
             "provisionState": "ready_to_bind",
-            "nextAction": "wait_bind",
+            "nextAction": "connect_mqtt_then_wait_bind",
             "heartbeatIntervalMs": heartbeat_interval_ms,
+            "mqtt": device_mqtt_config(device["device_no"], heartbeat_interval_ms),
             "message": "Device online, ready to bind",
         },
         "Device online, ready to bind",
+    )
+
+
+def handle_bootstrap_request(connection, device: dict[str, Any], key_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    current_time = now_ms()
+    heartbeat_interval_ms = device_heartbeat_interval_ms(device)
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET online = 1, display_status = '在线', updated_at = ?, last_seen_at = ?, heartbeat_interval_ms = ?
+        WHERE device_no = ?
+        """,
+        (current_time, current_time, heartbeat_interval_ms, device["device_no"]),
+    )
+    return make_secure_response(
+        connection,
+        device["device_no"],
+        key_id,
+        "bootstrap.ack",
+        {
+            "accepted": True,
+            "serverTime": current_time,
+            "nextAction": "connect_mqtt",
+            "heartbeatIntervalMs": heartbeat_interval_ms,
+            "mqtt": device_mqtt_config(device["device_no"], heartbeat_interval_ms),
+            "message": "Bootstrap accepted, connect to MQTTS",
+        },
     )
 
 
@@ -1807,6 +1837,9 @@ def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
             if not result.get("success"):
                 return result
             return make_secure_response(connection, device_no, key_id, "provision.ack", result["data"])
+
+        if msg_type == "bootstrap.request":
+            return handle_bootstrap_request(connection, device, key_id, payload)
 
         current_time = now_ms()
         if msg_type in {"device.boot", "device.status", "telemetry.report"}:

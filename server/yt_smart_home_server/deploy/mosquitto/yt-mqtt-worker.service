@@ -1,0 +1,19 @@
+[Unit]
+Description=Yunting Smart Home MQTT Worker
+After=network-online.target mosquitto.service
+Wants=network-online.target
+Requires=mosquitto.service
+
+[Service]
+Type=simple
+User=yunting
+WorkingDirectory=/home/yunting/yt_smart_home_server
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m app.mqtt_worker
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/yunting/yt_smart_home_server/mqtt_worker.log
+StandardError=append:/home/yunting/yt_smart_home_server/mqtt_worker.log
+
+[Install]
+WantedBy=multi-user.target

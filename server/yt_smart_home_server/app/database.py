@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS device_registry (
   config_json TEXT NOT NULL,
   last_watering_at TEXT NOT NULL,
   last_synced_at INTEGER,
-  heartbeat_interval_ms INTEGER NOT NULL DEFAULT 30000,
+  heartbeat_interval_ms INTEGER NOT NULL DEFAULT 90000,
   last_heartbeat_at INTEGER,
   last_boot_at INTEGER,
   last_status_at INTEGER,
@@ -288,7 +288,7 @@ def add_column_if_missing(connection: sqlite3.Connection, table: str, column: st
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
-    add_column_if_missing(connection, "device_registry", "heartbeat_interval_ms", "INTEGER NOT NULL DEFAULT 30000")
+    add_column_if_missing(connection, "device_registry", "heartbeat_interval_ms", "INTEGER NOT NULL DEFAULT 90000")
     add_column_if_missing(connection, "device_registry", "last_heartbeat_at", "INTEGER")
     add_column_if_missing(connection, "device_registry", "last_boot_at", "INTEGER")
     add_column_if_missing(connection, "device_registry", "last_status_at", "INTEGER")
@@ -311,6 +311,9 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "device_commands", "result_code", "TEXT")
     add_column_if_missing(connection, "device_commands", "result_json", "TEXT NOT NULL DEFAULT '{}'")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(device_no, status, created_at ASC)")
+    connection.execute(
+        "UPDATE device_registry SET heartbeat_interval_ms = 90000 WHERE heartbeat_interval_ms IS NULL OR heartbeat_interval_ms = 30000"
+    )
 
 
 def init_db() -> None:

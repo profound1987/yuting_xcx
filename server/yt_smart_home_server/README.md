@@ -71,6 +71,36 @@ curl -X POST https://yutingsmarthome.xin/api \
 
 证书由 Certbot/Let's Encrypt 签发。当前小程序优先使用根域名 `/api`，API 子域名 `api.yutingsmarthome.xin` 仅作为后续恢复独立 API 域名的备选。
 
+## MQTTS 设备通路
+
+设备正式通路使用 MQTTS，详见 [docs/mqtts-rollout-plan.md](../../docs/mqtts-rollout-plan.md)。服务器端保留 HTTPS `device.secureMessage msgType=command.pull` 作为旧测试固件和业务调试兜底。
+
+首版新增独立 MQTT Worker，用于消费设备上行 Topic 并发布 `queued` 命令到设备 `down` Topic：
+
+```bash
+python3 -m app.mqtt_worker
+```
+
+相关环境变量：
+
+```bash
+YT_MQTT_ENABLED=true
+YT_MQTT_HOST=yutingsmarthome.xin
+YT_MQTT_PORT=8883
+YT_MQTT_TLS=true
+YT_MQTT_CLIENT_ID=yt_cloud_worker
+YT_MQTT_USERNAME=
+YT_MQTT_PASSWORD=
+YT_MQTT_DEVICE_PASSWORD=
+YT_MQTT_KEEPALIVE_SECONDS=90
+YT_MQTT_POLL_INTERVAL_SECONDS=1.0
+YT_MQTT_PUBLISH_BATCH_SIZE=20
+```
+
+MQTT 账号密码只允许放在服务器 `.env` 或 Broker 配置中，不能写入小程序、二维码、公开文档或日志。
+
+当前服务器会在设备 HTTPS `provision.ack` / `bootstrap.ack` 的加密 payload 中返回 `mqtt` 对象，供设备端连接 `yutingsmarthome.xin:8883`。首版设备凭据使用 `mqtt.username=deviceNo` + `YT_MQTT_DEVICE_PASSWORD` 的固定 Broker 密码 MVP 机制，Broker ACL 限制设备只能访问自己的 `up/down/status` Topic。正式固件必须启用 TLS 证书校验，云端返回 `mqtt.tls.verifyRequired=true` 和 ISRG Root X1 CA。心跳统一为 `heartbeatIntervalMs=90000`。
+
 ## 已实现接口
 
 - `auth.sendCode`
