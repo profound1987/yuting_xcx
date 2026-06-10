@@ -44,7 +44,6 @@
       <view class="form-label">设备名称</view>
       <input class="form-input" placeholder="例如 阳台浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
     </view>
-    <view class="device-hint">设备类型会根据设备号自动识别；PIN 是近场持有证明，没有 PIN 不能配网。</view>
     <view class="primary-button" bindtap="configureDevice">配置设备</view>
   </view>
 

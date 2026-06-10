@@ -367,6 +367,15 @@ function getBleWifiStatusError(payload) {
   return getProvisionErrorMessage(code, (payload && payload.message) || "设备 Wi‑Fi 连接失败");
 }
 
+function isBleProvisionAcceptedCode(code) {
+  const normalizedCode = normalizeProvisionErrorCode(code);
+  return normalizedCode !== "DEVICE_PIN_INVALID"
+    && normalizedCode !== "DEVICE_PIN_LOCKED"
+    && normalizedCode !== "INVALID_PROTOCOL"
+    && normalizedCode !== "INVALID_PAYLOAD"
+    && normalizedCode !== "REPLAY_DETECTED";
+}
+
 function getBleWifiStatusType(payload) {
   const type = String((payload && payload.type) || "");
   return type === "wifiStatus"
@@ -675,6 +684,7 @@ Page({
     this.closeCurrentBleConnection();
     this.stopBleDiscovery();
     this.wifiProvisionWriteInProgress = false;
+    this.bleProvisionAccepted = false;
 
     this.setData({
       configuring: true,
@@ -775,6 +785,12 @@ Page({
 
   startBleDiscovery() {
     this.stopBleDiscovery();
+    this.bleScanSessionId = Date.now();
+    this.setData({
+      bleDevices: [],
+      selectedBleDevice: null,
+      showBleDeviceDialog: false,
+    });
 
     if (apiConfig.mode === "mock") {
       this.useMockBleDevices();
@@ -791,8 +807,6 @@ Page({
           powerLevel: "high",
           success: () => {
             this.setStatus("正在扫描附近以 ytsh- 开头的设备...", "info");
-            this.refreshKnownBleDevices();
-            this.bleScanPollTimer = setInterval(() => this.refreshKnownBleDevices(), 2000);
             this.bleScanTimeoutTimer = setTimeout(() => {
               if (!this.data.bleDevices.length) {
                 this.stopBleDiscovery();
@@ -1024,10 +1038,17 @@ Page({
       return;
     }
 
-    wx.createBLEConnection({
-      deviceId: device.deviceId,
-      timeout: 10000,
-      success: () => {
+    let finished = false;
+    const finish = (ok) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      if (this.bleConnectTimer) {
+        clearTimeout(this.bleConnectTimer);
+        this.bleConnectTimer = null;
+      }
+      if (ok) {
         this.connectedBleDeviceId = device.deviceId;
         this.setStep("scan", "done");
         this.setupBleStatusNotify(device.deviceId)
@@ -1036,14 +1057,21 @@ Page({
             this.setStep("scan", "error");
             this.setStatus(getProvisionErrorMessage("BLE_STATUS_NOTIFY_UNAVAILABLE"), "error");
           });
-      },
-      fail: () => {
-        this.closeCurrentBleConnection();
-        this.removeBleDevice(device.deviceId);
-        this.setStep("scan", "active");
-        this.setStatus("蓝牙连接失败，该设备广播可能已过期或设备已退出配网模式，正在重新扫描...", "info");
-        this.startBleDiscovery();
-      },
+        return;
+      }
+      this.closeCurrentBleConnection();
+      this.removeBleDevice(device.deviceId);
+      this.setStep("scan", "active");
+      this.setStatus("蓝牙连接失败，该设备广播可能已过期或设备已退出配网模式，正在重新扫描...", "info");
+      this.startBleDiscovery();
+    };
+
+    this.bleConnectTimer = setTimeout(() => finish(false), 12000);
+    wx.createBLEConnection({
+      deviceId: device.deviceId,
+      timeout: 10000,
+      success: () => finish(true),
+      fail: () => finish(false),
     });
   },
 
@@ -1166,10 +1194,14 @@ Page({
     const status = normalizeBleWifiStatus(payload);
     console.log("[BLE] Wi-Fi status payload", { status, payload });
     if (status === "progress") {
+      if (isBleProvisionAcceptedCode(payload.code || payload.result || payload.status)) {
+        this.bleProvisionAccepted = true;
+      }
       this.setStatus(getBleWifiStatusMessage(payload), "info");
       return;
     }
     if (status === "connected") {
+      this.bleProvisionAccepted = true;
       if (this.bleWifiStatusResolve) {
         const resolve = this.bleWifiStatusResolve;
         this.clearBleWifiWaiter();
@@ -1178,6 +1210,9 @@ Page({
       return;
     }
     if (status === "failed") {
+      if (isBleProvisionAcceptedCode(payload.code || payload.result || payload.status)) {
+        this.bleProvisionAccepted = true;
+      }
       this.wifiProvisionWriteInProgress = false;
       this.setData({ sendingWifi: false });
       const error = new Error(getBleWifiStatusError(payload));
@@ -1392,6 +1427,7 @@ Page({
       this.setData({ showWifiDialog: false });
       this.setStatus("Wi‑Fi 信息已发送，正在等待设备返回连接结果...", "info");
       await this.waitForBleWifiConnected(getWifiStatusTimeoutMs(prepareData));
+      this.bleProvisionAccepted = true;
       this.setStep("wifi", "done");
       this.setStatus("设备已连接 Wi‑Fi，正在等待云端认证...", "info");
       this.waitCloudOnline();
@@ -1491,7 +1527,7 @@ Page({
   },
 
   promptAddUnprovisioned(message) {
-    if (!this.data.selectedBleDevice && !this.data.bleDevices.length) {
+    if (!this.canAddUnprovisionedDevice()) {
       wx.showModal({ title: "配网失败", content: message, showCancel: false });
       return;
     }
@@ -1508,7 +1544,15 @@ Page({
     });
   },
 
+  canAddUnprovisionedDevice() {
+    return apiConfig.mode === "mock" || !!this.bleProvisionAccepted;
+  },
+
   async addUnprovisionedDevice() {
+    if (!this.canAddUnprovisionedDevice()) {
+      wx.showModal({ title: "无法加入", content: "只有设备已通过正确 PIN 接收 Wi‑Fi 信息后，才能临时加入我的设备。", showCancel: false });
+      return;
+    }
     wx.showLoading({ title: "加入中..." });
     let resp = null;
     try {

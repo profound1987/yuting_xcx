@@ -16,7 +16,6 @@
       <view class="form-label">设备 PIN</view>
       <input class="form-input" type="number" maxlength="8" placeholder="设备标签上的 4-8 位 PIN" value="{{devicePin}}" bindinput="onDevicePinInput" />
     </view>
-    <view class="pin-tip">PIN 是近场持有证明。没有 PIN 不能开始配网，避免邻近人员仅凭蓝牙广播名称配置设备。</view>
     <view class="form-row">
       <view class="form-label">设备名称</view>
       <input class="form-input" placeholder="例如 阳台浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
