@@ -381,6 +381,11 @@ page {
   color: #7c8984;
 }
 
+.status-pill.unprovisioned {
+  background: #fff8e6;
+  color: #9a6a00;
+}
+
 .device-actions {
   display: flex;
   justify-content: flex-end;
@@ -401,6 +406,12 @@ page {
   color: #087d91;
   font-size: 24rpx;
   line-height: 1;
+}
+
+.text-button.configure {
+  background: #eefafa;
+  color: #087d91;
+  border: 1rpx solid #b8dee3;
 }
 
 .text-button.danger {

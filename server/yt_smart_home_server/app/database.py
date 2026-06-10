@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS device_registry (
   name TEXT NOT NULL,
   status TEXT NOT NULL,
   bind_status TEXT NOT NULL,
+  provision_state TEXT NOT NULL DEFAULT 'provisioned',
   online INTEGER NOT NULL,
   owner_user_id TEXT,
   mock_scenario TEXT NOT NULL,
@@ -288,6 +289,7 @@ def add_column_if_missing(connection: sqlite3.Connection, table: str, column: st
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "device_registry", "provision_state", "TEXT NOT NULL DEFAULT 'provisioned'")
     add_column_if_missing(connection, "device_registry", "heartbeat_interval_ms", "INTEGER NOT NULL DEFAULT 90000")
     add_column_if_missing(connection, "device_registry", "last_heartbeat_at", "INTEGER")
     add_column_if_missing(connection, "device_registry", "last_boot_at", "INTEGER")

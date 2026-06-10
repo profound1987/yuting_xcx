@@ -1,5 +1,7 @@
 const SESSION_KEY = "yuntingSession";
 const DEVICES_KEY_PREFIX = "yuntingDevices";
+const BLE_PIN_KEY_PREFIX = "yuntingBlePin";
+const DEVICE_LOCAL_STATE_KEY_PREFIX = "yuntingDeviceLocalState";
 const { callApi } = require("../../services/apiClient");
 
 const DEVICE_TYPES = [
@@ -20,6 +22,7 @@ const FILTERS = [
 ];
 
 const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
+const DEVICE_PIN_PATTERN = /^\d{4,8}$/;
 const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
 const CRC32_TABLE = createCrc32Table();
 const DEVICE_NO_ERROR = "设备号不正确";
@@ -61,6 +64,34 @@ function maskPhone(phone) {
 function extractDeviceNo(text) {
   const matched = normalizeDeviceNo(text).match(/YT-[A-Z]{2}-[0-9A-F]{5}-[0-9A-F]{4}/);
   return matched ? matched[0] : "";
+}
+
+function normalizePin(value) {
+  return String(value || "").trim();
+}
+
+function extractDevicePin(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const pin = normalizePin(parsed.pin || parsed.devicePin || parsed.device_pin);
+    if (pin) {
+      return pin;
+    }
+  } catch (error) {}
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch (error) {}
+  const queryMatch = decoded.match(/(?:^|[?&#])(?:pin|devicePin|device_pin)=([0-9]{4,8})(?:$|[&#])/i);
+  if (queryMatch) {
+    return queryMatch[1];
+  }
+  const textMatch = decoded.match(/(?:^|\b)(?:PIN|pin|设备PIN|设备 Pin)\s*[:=：]\s*([0-9]{4,8})(?:\b|$)/);
+  return textMatch ? textMatch[1] : "";
 }
 
 function getDeviceTypeByCode(code) {
@@ -118,6 +149,106 @@ function setStoredDevices(phone, devices) {
   wx.setStorageSync(getDevicesKey(phone), devices);
 }
 
+function getBlePinKey(deviceNo) {
+  return `${BLE_PIN_KEY_PREFIX}_${deviceNo || "unknown"}`;
+}
+
+function getCachedBlePin(deviceNo) {
+  return normalizePin(wx.getStorageSync(getBlePinKey(deviceNo)) || "");
+}
+
+function setCachedBlePin(deviceNo, pin) {
+  const normalized = normalizePin(pin);
+  if (deviceNo && DEVICE_PIN_PATTERN.test(normalized)) {
+    wx.setStorageSync(getBlePinKey(deviceNo), normalized);
+  }
+}
+
+function getDeviceLocalStateKey(deviceNo) {
+  return `${DEVICE_LOCAL_STATE_KEY_PREFIX}_${deviceNo || "unknown"}`;
+}
+
+function getCachedDeviceLocalState(deviceNo) {
+  const state = wx.getStorageSync(getDeviceLocalStateKey(deviceNo));
+  return state && typeof state === "object" ? state : {};
+}
+
+function hasConfigContent(config) {
+  return !!(
+    config && typeof config === "object" && (
+      config.automationMode
+      || (Array.isArray(config.enabledFeatures) && config.enabledFeatures.length)
+      || (config.features && typeof config.features === "object" && Object.keys(config.features).length)
+    )
+  );
+}
+
+function isDeviceProvisioned(device) {
+  return !(device && (device.provisioned === false || device.provisionState === "not_provisioned" || device.networkState === "not_provisioned" || device.status === "未入网"));
+}
+
+function isDeviceOnline(device) {
+  return !!(device && isDeviceProvisioned(device) && device.online !== false && device.status !== "离线");
+}
+
+function isLocalStateNewer(localState, device) {
+  const localUpdatedAt = Number((localState && localState.updatedAt) || 0);
+  const remoteUpdatedAt = Number((device && device.updatedAt) || 0);
+  return !!(localUpdatedAt && (!remoteUpdatedAt || localUpdatedAt >= remoteUpdatedAt));
+}
+
+function mergeLocalDeviceState(device) {
+  if (!device || !device.deviceNo) {
+    return device;
+  }
+  const localState = getCachedDeviceLocalState(device.deviceNo);
+  if (!localState || !Object.keys(localState).length) {
+    return device;
+  }
+  const nextDevice = Object.assign({}, device);
+  const localConfig = localState.appliedConfig || localState.desiredConfig || localState.config;
+  const remoteConfig = device.appliedConfig || device.desiredConfig || device.config;
+  const localStateNewer = isLocalStateNewer(localState, device);
+  const shouldUseLocalConfig = hasConfigContent(localConfig) && (
+    localStateNewer
+    || !isDeviceOnline(device)
+    || !hasConfigContent(remoteConfig)
+    || device.configState === "unconfigured"
+  );
+  if (shouldUseLocalConfig) {
+    nextDevice.config = localState.config || localConfig;
+    nextDevice.desiredConfig = localState.desiredConfig || localConfig;
+    nextDevice.appliedConfig = localState.appliedConfig || localConfig;
+    nextDevice.configState = localState.configState || "synced";
+    nextDevice.desiredConfigVersion = localState.desiredConfigVersion || nextDevice.desiredConfigVersion || 0;
+    nextDevice.appliedConfigVersion = localState.appliedConfigVersion || nextDevice.appliedConfigVersion || 0;
+    nextDevice.desiredConfigHash = localState.desiredConfigHash || nextDevice.desiredConfigHash || "";
+    nextDevice.appliedConfigHash = localState.appliedConfigHash || nextDevice.appliedConfigHash || "";
+    nextDevice.pendingCommandId = localState.pendingCommandId || "";
+    nextDevice.lastSyncedAt = localState.lastSyncedAt || nextDevice.lastSyncedAt;
+  }
+  if (localState.lastWateringAt && (!nextDevice.lastWateringAt || localStateNewer || !isDeviceOnline(device) || String(localState.lastWateringAt) > String(nextDevice.lastWateringAt))) {
+    nextDevice.lastWateringAt = localState.lastWateringAt;
+  }
+  return nextDevice;
+}
+
+function mergeLocalBlePins(remoteDevices, localDevices) {
+  const pinByDeviceNo = {};
+  (localDevices || []).forEach((item) => {
+    const pin = normalizePin(item && item.blePin);
+    if (item && item.deviceNo && DEVICE_PIN_PATTERN.test(pin)) {
+      pinByDeviceNo[item.deviceNo] = pin;
+      setCachedBlePin(item.deviceNo, pin);
+    }
+  });
+  return (remoteDevices || []).map((item) => {
+    const pin = pinByDeviceNo[item.deviceNo] || getCachedBlePin(item.deviceNo);
+    const withPin = DEVICE_PIN_PATTERN.test(pin) ? Object.assign({}, item, { blePin: pin }) : item;
+    return mergeLocalDeviceState(withPin);
+  });
+}
+
 function unbindDeviceRemote(phone, deviceNo) {
   return callApi("device.unbind", { phone, deviceNo });
 }
@@ -131,6 +262,7 @@ Page({
     filters: FILTERS,
     activeFilter: "all",
     deviceNo: "",
+    devicePin: "",
     deviceName: "",
     deviceCount: 0,
     onlineCount: 0,
@@ -157,16 +289,16 @@ Page({
   },
 
   async loadDevices() {
-    let devices = getStoredDevices(this.data.phone);
+    let devices = getStoredDevices(this.data.phone).map((item) => mergeLocalDeviceState(item));
     try {
       const resp = await callApi("device.list", { phone: this.data.phone });
       if (resp && resp.success && resp.data && Array.isArray(resp.data.devices)) {
-        devices = resp.data.devices;
+        devices = mergeLocalBlePins(resp.data.devices, devices);
         setStoredDevices(this.data.phone, devices);
       }
     } catch (error) {}
 
-    const onlineCount = devices.filter((item) => item.online !== false && item.status !== "离线").length;
+    const onlineCount = devices.filter((item) => item.online !== false && item.status !== "离线" && item.status !== "未入网" && item.networkState !== "not_provisioned").length;
     this.setData({
       devices,
       deviceCount: devices.length,
@@ -191,6 +323,10 @@ Page({
     this.setData({ deviceNo: normalizeDeviceNo(e.detail.value) });
   },
 
+  onDevicePinInput(e) {
+    this.setData({ devicePin: normalizePin(e.detail.value) });
+  },
+
   onDeviceNameInput(e) {
     this.setData({ deviceName: e.detail.value.trim() });
   },
@@ -212,10 +348,12 @@ Page({
           return;
         }
 
+        const devicePin = extractDevicePin(res.result);
         this.setData({
           deviceNo: parsed.deviceNo,
+          devicePin,
         });
-        wx.showToast({ title: "已读取设备号" });
+        wx.showToast({ title: devicePin ? "已读取设备号和 PIN" : "已读取设备号" });
       },
     });
   },
@@ -233,13 +371,32 @@ Page({
       return;
     }
 
+    if (!DEVICE_PIN_PATTERN.test(normalizePin(this.data.devicePin))) {
+      wx.showToast({ title: "请输入设备 PIN", icon: "none" });
+      return;
+    }
+
     const devices = getStoredDevices(this.data.phone);
-    if (devices.some((item) => item.deviceNo === parsed.deviceNo)) {
+    const existingDevice = devices.find((item) => item.deviceNo === parsed.deviceNo);
+    if (existingDevice && existingDevice.provisionState !== "not_provisioned" && existingDevice.networkState !== "not_provisioned" && existingDevice.provisioned !== false) {
       wx.showModal({ title: "设备已存在", content: DEVICE_ALREADY_BOUND_ERROR, showCancel: false });
       return;
     }
 
-    const target = `/pages/configure/index?deviceNo=${encodeURIComponent(parsed.deviceNo)}&deviceName=${encodeURIComponent(deviceName)}`;
+    const target = `/pages/configure/index?deviceNo=${encodeURIComponent(parsed.deviceNo)}&pin=${encodeURIComponent(this.data.devicePin)}&deviceName=${encodeURIComponent(deviceName)}`;
+    wx.navigateTo({ url: target });
+  },
+
+  configureStoredDevice(e) {
+    const id = e.currentTarget.dataset.id;
+    const device = getStoredDevices(this.data.phone).find((item) => item.id === id);
+    if (!device) {
+      wx.showToast({ title: "设备不存在", icon: "none" });
+      return;
+    }
+    const pin = normalizePin(device.blePin || getCachedBlePin(device.deviceNo));
+    const pinQuery = DEVICE_PIN_PATTERN.test(pin) ? `&pin=${encodeURIComponent(pin)}` : "";
+    const target = `/pages/configure/index?deviceNo=${encodeURIComponent(device.deviceNo)}&deviceName=${encodeURIComponent(device.name || "")}${pinQuery}`;
     wx.navigateTo({ url: target });
   },
 

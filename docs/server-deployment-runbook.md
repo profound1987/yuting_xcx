@@ -217,7 +217,7 @@ curl.exe -sS -X POST https://yutingsmarthome.xin/api `
   -d '{"type":"device.prepareConfigure","data":{"phone":"13800008888","deviceNo":"YT-AW-00003-9A57"}}'
 ```
 
-期望 `success=true`，且 `data.provisionSessionId` 有值。注意：该命令会在测试库里创建或更新该手机号用户，仅用于测试环境；测试设备号必须从台账中选择当前未绑定设备，不要手写校验码。
+期望 `success=true`，且 `data.provisionSessionId` 有值。注意：该命令会在测试库里创建或更新该手机号用户，仅用于测试环境；测试设备号必须从台账中选择当前未绑定设备，不要手写校验码；方案 B 中服务端不再接收或校验设备 PIN。
 
 ## 6. MQTTS 运维验证
 

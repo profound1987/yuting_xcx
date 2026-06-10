@@ -80,8 +80,7 @@
     "phone": "13800138000",
     "deviceNo": "YT-AW-00000-A324",
     "deviceName": "阳台自动浇水",
-    "provisioned": true,
-    "provisionSource": "ble-wifi"
+    "provisionSessionId": "ps_xxx"
   }
 }
 ```
@@ -178,7 +177,8 @@ const API_CONFIG = {
 | 鉴权 | `auth.checkSession` | 校验并刷新会话 |
 | 设备 | `device.prepareConfigure` | 配置设备前检查设备号、设备归属和是否允许进入配网，并创建临时配网会话 |
 | 设备 | `device.checkProvisionStatus` | 小程序配网后轮询设备是否已通过云端认证上线 |
-| 设备 | `device.bind` | 设备配网成功并连接云端后，绑定设备到当前用户 |
+| 设备 | `device.bind` | 设备配网成功并连接云端后，凭 `provisionSessionId` 完成最终绑定到当前用户 |
+| 设备 | `device.addUnprovisioned` | BLE 已扫描到设备但后续配网失败时，先加入“我的设备”并标记为 `not_provisioned/未入网` |
 | 设备 | `device.unbind` | 当前用户解除设备绑定并清理该设备在当前账号下的数据 |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.getStatus` | 查询设备在线状态和传感器数据 |
@@ -188,7 +188,7 @@ const API_CONFIG = {
 | 浇水 | `watering.startManual` | 创建手动浇水命令，返回 `COMMAND_ACCEPTED` 和 `commandId` |
 | 浇水 | `watering.stopManual` | 创建停止浇水命令，返回 `COMMAND_ACCEPTED` 和 `commandId` |
 
-后端必须重新校验登录态、设备归属和设备号合法性。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网，并取得 `provisionSessionId`；随后通过 BLE 给设备下发 Wi-Fi 信息和 `provisionSessionId`，等待设备连接云端并通过 AES-128-CCM 认证上报 `provision.result`；小程序再调用 `device.checkProvisionStatus` 轮询，只有返回 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。`device.bind` 仍必须在后端再次确认设备已经上云、配网会话有效且状态为 `ready_to_bind`、设备未被其他用户绑定，并成功写入设备归属和绑定审计记录后，才能返回成功；浇水设备不自动创建真实业务默认配置。
+后端必须重新校验登录态、设备归属和设备号合法性，但不再接收或校验设备 PIN。客户端的 CRC32 校验只用于减少误输入，不能作为最终安全边界；BLE 广播名和设备号不是秘密，必须有设备标签或二维码中的 PIN 作为近场持有证明。配置设备时，手机端应先调用 `device.prepareConfigure` 判断设备是否未绑定且允许配网，并取得 `provisionSessionId`；随后小程序和设备端本地通过 `YTS-BLE/1` 用 `SHA256(deviceNo|PIN|固定 BLE salt)` 派生的 AES-128-CCM key 加密下行 BLE 帧，给设备下发 Wi-Fi 信息、设备号和 `provisionSessionId`，不得把 PIN 作为云端字段或 BLE 明文字段发送；设备上行 Notify 本期保持明文 JSON 状态，不需要 nonce/ciphertext/tag。设备连接云端并通过 AES-128-CCM 认证上报 `provision.result` 后，小程序再调用 `device.checkProvisionStatus` 轮询，只有返回 `DEVICE_READY_TO_BIND` 后才调用 `device.bind`。`device.bind` 必须在后端再次确认设备已经上云、配网会话有效且状态为 `ready_to_bind`、设备未被其他用户绑定，并成功写入设备归属和绑定审计记录后，才能返回成功；浇水设备不自动创建真实业务默认配置。若已经扫描到 BLE 设备但 Wi‑Fi 或云端认证失败，小程序可弹窗询问是否先加入“我的设备”，确认后调用 `device.addUnprovisioned`，设备显示为 `未入网`，不是在线或离线，后续只显示“配网”入口并允许 BLE 本地控制兜底。BLE 本地控制不走 MQTT 或 `command.pull`，而是通过 `YTS-BLE/1 local.command` 加密下行帧复用云端命令的 `commandType/params/ack` 业务语义；本期暂不实现 `bleControlTicket`。
 
 `device.unbind` 必须要求当前用户拥有该设备。解除绑定前，手机端需要明确提示用户：解除绑定后，该设备的配置和本地数据会从当前账号删除。只有后端成功清理设备归属、配置、缓存状态和解绑审计记录后，手机端才从本地列表移除设备。
 

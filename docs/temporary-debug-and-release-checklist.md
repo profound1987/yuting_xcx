@@ -19,7 +19,7 @@
 - 登录页会显示“调试登录”按钮。
 - 点击后不请求 `auth.sendCode` / `auth.loginByCode`，直接写入本地 `yuntingSession`。
 - 用于真机 BLE 联调，避免手机端因域名/备案/验证码链路问题卡在登录页。
-- 使用调试登录态进入配置页时，如果 `device.prepareConfigure` 因网络或临时接口问题失败，小程序会允许继续 BLE 扫描；明确的设备号错误或已被绑定仍不放行。
+- 使用调试登录态进入配置页时，如果 `device.prepareConfigure` 因网络或临时接口问题失败，小程序会允许继续 BLE 扫描；明确的设备号错误或已被绑定仍不放行。PIN 只用于小程序和设备端 BLE 加密，不再由服务端校验。
 
 上线前必须修正：
 
@@ -28,7 +28,7 @@
 3. 确认登录页不再展示“调试登录”按钮。
 4. 删除或保留但禁用所有 `devBypass` 相关逻辑。
 5. 重新验证真实短信验证码登录流程。
-6. 重新验证 `device.prepareConfigure` 必须成功后才能进入 BLE 配网。
+6. 重新验证 `device.prepareConfigure` 不携带 PIN 也能创建 `provisionSessionId`，并验证 BLE 加密帧使用正确 PIN 才能被设备解密。
 
 风险：
 

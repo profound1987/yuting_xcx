@@ -7,7 +7,7 @@
         <view class="device-name">{{device.name}}</view>
         <view class="device-meta">{{device.typeLabel}} · {{device.deviceNo}}</view>
       </view>
-      <view class="status-pill {{manualRunning ? 'running' : ''}} {{device.online === false ? 'offline' : ''}}">{{device.status}}</view>
+      <view class="status-pill {{manualRunning ? 'running' : ''}} {{device.online === false ? 'offline' : ''}} {{device.networkState === 'not_provisioned' || device.provisionState === 'not_provisioned' ? 'unprovisioned' : ''}}">{{device.status}}</view>
     </view>
     <view class="hero-grid">
       <view class="hero-item">
@@ -23,6 +23,12 @@
         <view class="hero-value small {{canEdit ? '' : 'muted'}}">{{syncText}}</view>
       </view>
     </view>
+  </view>
+
+  <view class="notice-panel warning" wx:if="{{device.networkState === 'not_provisioned' || device.provisionState === 'not_provisioned'}}">
+    <view class="notice-title">设备未入网</view>
+    <view class="notice-text">设备已加入我的设备，但还没有完成联网配网。可点击配网继续配置；如果设备无法联网，控制会尝试通过蓝牙发送。</view>
+    <view class="inline-configure-button" bindtap="goConfigure">配网</view>
   </view>
 
   <block wx:if="{{device.type === 'watering'}}">
@@ -121,11 +127,24 @@
       <progress percent="{{commandDialogProgress}}" activeColor="{{commandDialogColor}}" backgroundColor="#dce8e2" stroke-width="6" />
       <view class="command-countdown" wx:if="{{commandCountdownVisible}}">{{commandCountdownText}}</view>
       <view class="command-steps">
-        <view class="command-step {{commandDialogProgress >= 33 ? 'active' : ''}} {{commandDialogStatus}}">已提交给服务器</view>
-        <view class="command-step {{commandDialogProgress >= 66 ? 'active' : ''}} {{commandDialogStatus}}">设备已接收</view>
-        <view class="command-step {{commandDialogProgress >= 100 ? 'active' : ''}} {{commandDialogStatus}}">设备已完成</view>
+        <view class="command-step {{commandDialogProgress >= 33 ? 'active' : ''}} {{commandDialogStatus}}">{{commandStep1Text}}</view>
+        <view class="command-step {{commandDialogProgress >= 66 ? 'active' : ''}} {{commandDialogStatus}}">{{commandStep2Text}}</view>
+        <view class="command-step {{commandDialogProgress >= 100 ? 'active' : ''}} {{commandDialogStatus}}">{{commandStep3Text}}</view>
       </view>
       <view class="command-close {{commandDialogClosable ? '' : 'disabled'}}" bindtap="closeCommandDialog">{{commandDialogClosable ? '知道了' : '执行中，请稍候'}}</view>
+    </view>
+  </view>
+
+  <view class="command-mask" wx:if="{{blePinDialogVisible}}">
+    <view class="command-dialog pin-dialog">
+      <view class="command-title">输入设备 PIN</view>
+      <view class="command-text">请输入设备标签上的 4-8 位数字 PIN，用于本次蓝牙本地控制。</view>
+      <input class="pin-input" type="number" maxlength="8" placeholder="设备 PIN" value="{{blePinInput}}" bindinput="onBlePinInput" focus="true" />
+      <view class="pin-error" wx:if="{{blePinError}}">{{blePinError}}</view>
+      <view class="pin-actions">
+        <view class="pin-button secondary" bindtap="cancelBlePinDialog">取消</view>
+        <view class="pin-button primary" bindtap="confirmBlePinDialog">确认</view>
+      </view>
     </view>
   </view>
 </view>

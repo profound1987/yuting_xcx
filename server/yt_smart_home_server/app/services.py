@@ -47,6 +47,8 @@ PROVISION_CLIENT_TIMEOUT_MS = 120 * 1000
 PROVISION_POLL_INTERVAL_MS = 2000
 PROVISION_BIND_WINDOW_MS = 2 * 60 * 1000
 PROVISION_WIFI_STATUS_TIMEOUT_MS = 60 * 1000
+PROVISION_STATE_NOT_PROVISIONED = "not_provisioned"
+PROVISION_STATE_PROVISIONED = "provisioned"
 SECURE_PROTOCOL_VERSION = 1
 SECURE_ALG = "AES-128-CCM"
 SECURE_TAG_LENGTH = 16
@@ -128,6 +130,20 @@ def parse_admin_online_filter(value: Any) -> int | None | str:
 
 def normalize_device_no(value: str | None) -> str:
     return (value or "").strip().upper()
+
+
+def device_provision_state(device: dict[str, Any]) -> str:
+    return device.get("provision_state") or PROVISION_STATE_PROVISIONED
+
+
+def is_device_provisioned(device: dict[str, Any]) -> bool:
+    return device_provision_state(device) == PROVISION_STATE_PROVISIONED
+
+
+def device_network_state(device: dict[str, Any]) -> str:
+    if not is_device_provisioned(device):
+        return PROVISION_STATE_NOT_PROVISIONED
+    return "online" if device.get("online") else "offline"
 
 
 def default_watering_config() -> dict[str, Any]:
@@ -348,7 +364,7 @@ def normalize_seed_device_ownership(connection, current_time: int) -> None:
         f"""
         UPDATE device_registry
         SET bind_status = 'unbound', owner_user_id = NULL, online = 1,
-            display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            provision_state = 'provisioned', display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
             last_seen_at = COALESCE(last_seen_at, ?), updated_at = ?
         WHERE mock_scenario = 'sale-unbound-online'
           AND owner_user_id IN ({seed_user_marks})
@@ -359,7 +375,7 @@ def normalize_seed_device_ownership(connection, current_time: int) -> None:
         f"""
         UPDATE device_registry
         SET bind_status = 'bound', owner_user_id = ?, online = 1,
-            display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            provision_state = 'provisioned', display_status = '在线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
             last_seen_at = COALESCE(last_seen_at, ?), updated_at = ?
         WHERE mock_scenario = 'sale-bound-online'
           AND (owner_user_id IS NULL OR owner_user_id IN ({seed_user_marks}))
@@ -371,7 +387,7 @@ def normalize_seed_device_ownership(connection, current_time: int) -> None:
         f"""
         UPDATE device_registry
         SET bind_status = 'bound', owner_user_id = ?, online = 0,
-            display_status = '离线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
+            provision_state = 'provisioned', display_status = '离线', heartbeat_interval_ms = COALESCE(heartbeat_interval_ms, ?),
             updated_at = ?
         WHERE mock_scenario = 'sale-bound-offline'
           AND (owner_user_id IS NULL OR owner_user_id IN ({seed_user_marks}))
@@ -470,6 +486,17 @@ def ensure_seed_device_metadata(connection, current_time: int) -> None:
     backfill_capabilities_from_provision_reports(connection, current_time)
 
 
+def ensure_seed_device_security(connection, current_time: int) -> None:
+    connection.execute(
+        """
+        UPDATE device_registry
+        SET provision_state = 'provisioned', updated_at = ?
+        WHERE provision_state IS NULL OR provision_state = ''
+        """,
+        (current_time,),
+    )
+
+
 def ensure_seed_data() -> None:
     current_time = now_ms()
     with db() as connection:
@@ -478,6 +505,7 @@ def ensure_seed_data() -> None:
         if row and row["count"]:
             normalize_seed_device_ownership(connection, current_time)
             ensure_seed_device_metadata(connection, current_time)
+            ensure_seed_device_security(connection, current_time)
             ensure_all_device_keys(connection, current_time)
             return
 
@@ -496,12 +524,12 @@ def ensure_seed_data() -> None:
                     """
                     INSERT INTO device_registry(
                       device_no, type_code, serial, device_type, type_label, name, status,
-                      bind_status, online, owner_user_id, mock_scenario, display_status,
-                      config_json, last_watering_at, last_synced_at, heartbeat_interval_ms,
-                      last_seen_at, telemetry_json, capability_state, capabilities_json,
-                      config_state, desired_config_json, desired_config_version, applied_config_json,
-                      applied_config_version, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, 'unconfigured', NULL, 0, NULL, 0, ?, ?)
+                      bind_status, provision_state, online, owner_user_id,
+                      mock_scenario, display_status, config_json, last_watering_at, last_synced_at,
+                      heartbeat_interval_ms, last_seen_at, telemetry_json, capability_state,
+                      capabilities_json, config_state, desired_config_json, desired_config_version,
+                      applied_config_json, applied_config_version, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'provisioned', ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, 'unconfigured', NULL, 0, NULL, 0, ?, ?)
                     """,
                     (
                         device_no,
@@ -1332,6 +1360,8 @@ def user_get_profile(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_display_status(device: dict[str, Any]) -> str:
+    if not is_device_provisioned(device):
+        return "未入网"
     if device["display_status"] == "浇水中":
         return "浇水中"
     return "在线" if device["online"] else "离线"
@@ -1370,6 +1400,10 @@ def device_capability_view(device: dict[str, Any]) -> dict[str, Any]:
 def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> dict[str, Any]:
     config_view = device_config_view(device)
     capability_view = device_capability_view(device)
+    provisioned = is_device_provisioned(device)
+    online = bool(device["online"]) and provisioned
+    network_state = device_network_state({**device, "online": 1 if online else 0})
+    can_configure = device["bind_status"] == "bound" and not provisioned
     return {
         "id": device["device_no"].replace("-", "_"),
         "deviceNo": device["device_no"],
@@ -1379,8 +1413,13 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "type": device["device_type"],
         "typeLabel": device["type_label"],
         "status": get_display_status(device),
-        "online": bool(device["online"]),
+        "online": online,
         "bindStatus": device["bind_status"],
+        "provisionState": device_provision_state(device),
+        "provisioned": provisioned,
+        "networkState": network_state,
+        "canConfigure": can_configure,
+        "canBleControl": device["bind_status"] == "bound" and (not provisioned or not online),
         "ownerPhone": owner_phone or "",
         "mockScenario": device["mock_scenario"],
         "config": config_view["config"],
@@ -1400,7 +1439,7 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "lastBootAt": device.get("last_boot_at"),
         "lastSeenAt": device.get("last_seen_at"),
         "telemetry": json_loads(device.get("telemetry_json"), {}),
-        "syncState": config_view["configState"] if device["online"] else "offline",
+        "syncState": PROVISION_STATE_NOT_PROVISIONED if not provisioned else (config_view["configState"] if online else "offline"),
         "createdAt": device["created_at"],
         "updatedAt": device["updated_at"],
     }
@@ -1496,6 +1535,7 @@ def mark_stale_devices_offline(connection, current_time: int | None = None) -> N
         UPDATE device_registry
         SET online = 0, display_status = '离线', updated_at = ?
         WHERE online = 1
+          AND provision_state = 'provisioned'
           AND last_seen_at IS NOT NULL
           AND (? - last_seen_at) >= (COALESCE(heartbeat_interval_ms, ?) * ?)
         """,
@@ -1522,14 +1562,14 @@ def update_device_seen(connection, device_no: str, msg_type: str, payload: dict[
         connection.execute(
             """
             UPDATE device_registry
-            SET online = 0, display_status = '离线', last_status_at = ?, last_seen_at = ?, updated_at = ?
+            SET online = 0, provision_state = 'provisioned', display_status = '离线', last_status_at = ?, last_seen_at = ?, updated_at = ?
             WHERE device_no = ?
             """,
             (current_time, current_time, current_time, device_no),
         )
         return
 
-    set_parts = ["online = 1", "display_status = '在线'", "last_seen_at = ?", "updated_at = ?"]
+    set_parts = ["online = 1", "provision_state = 'provisioned'", "display_status = '在线'", "last_seen_at = ?", "updated_at = ?"]
     params: list[Any] = [current_time, current_time]
     if msg_type == "telemetry.report":
         set_parts.extend(["last_heartbeat_at = ?", "last_telemetry_at = ?", "telemetry_json = ?"])
@@ -1727,7 +1767,7 @@ def handle_provision_result(connection, device: dict[str, Any], session: dict[st
     connection.execute(
         """
         UPDATE device_registry
-        SET online = 1, display_status = '在线', updated_at = ?, last_seen_at = ?,
+        SET online = 1, provision_state = 'provisioned', display_status = '在线', updated_at = ?, last_seen_at = ?,
             heartbeat_interval_ms = ?
         WHERE device_no = ?
         """,
@@ -1753,7 +1793,7 @@ def handle_bootstrap_request(connection, device: dict[str, Any], key_id: str, pa
     connection.execute(
         """
         UPDATE device_registry
-        SET online = 1, display_status = '在线', updated_at = ?, last_seen_at = ?, heartbeat_interval_ms = ?
+        SET online = 1, provision_state = 'provisioned', display_status = '在线', updated_at = ?, last_seen_at = ?, heartbeat_interval_ms = ?
         WHERE device_no = ?
         """,
         (current_time, current_time, heartbeat_interval_ms, device["device_no"]),
@@ -2007,9 +2047,9 @@ def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
             return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确", user)
 
         if device["bind_status"] == "bound":
-            if device["owner_user_id"] == user["id"]:
+            if device["owner_user_id"] == user["id"] and is_device_provisioned(device):
                 return fail("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", {"device": device_payload(device, user["phone"])})
-            if device["owner_user_id"] or device["mock_scenario"] == "sale-bound-online":
+            if device["owner_user_id"] and device["owner_user_id"] != user["id"] or device["mock_scenario"] == "sale-bound-online":
                 record_bind_attempt(
                     connection,
                     data,
@@ -2032,6 +2072,8 @@ def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
                 "type": device["device_type"],
                 "typeLabel": device["type_label"],
                 "bindStatus": device["bind_status"],
+                "provisionState": device_provision_state(device),
+                "pinRequired": False,
                 "bleNamePrefix": "ytsh-",
                 "needBleProvision": True,
                 "provisionSessionId": session["id"],
@@ -2202,8 +2244,9 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
         connection.execute(
             """
             UPDATE device_registry
-            SET bind_status = 'bound', owner_user_id = ?, name = ?, config_json = '{}',
-                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
+            SET bind_status = 'bound', owner_user_id = ?, name = ?, provision_state = 'provisioned', online = 1,
+                display_status = '在线', config_json = '{}', config_state = 'unconfigured',
+                desired_config_json = NULL, desired_config_version = 0,
                 desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
                 applied_config_hash = NULL, pending_command_id = NULL, updated_at = ?
             WHERE device_no = ?
@@ -2224,6 +2267,95 @@ def device_bind(data: dict[str, Any]) -> dict[str, Any]:
         return ok({"user": public_user(user), "device": device_payload(updated, user["phone"])}, "绑定成功")
 
 
+def device_add_unprovisioned(data: dict[str, Any]) -> dict[str, Any]:
+    input_device_no = data.get("deviceNo") or ""
+    normalized_device_no = normalize_device_no(input_device_no)
+    with db() as connection:
+        locked = bind_locked_response(connection, data, input_device_no, normalized_device_no)
+        if locked:
+            return locked
+        parsed = parse_device_no(input_device_no)
+        if not parsed or parsed["serialNumber"] > 0x00063:
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                normalized_device_no,
+                "failed",
+                "DEVICE_NOT_BINDABLE",
+                "设备号不正确",
+                "add_unprovisioned_invalid_or_not_produced",
+            )
+            return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确")
+
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+        device = get_device(connection, parsed["deviceNo"])
+        if not device or device["status"] != "registered":
+            record_bind_attempt(
+                connection,
+                data,
+                input_device_no,
+                parsed["deviceNo"],
+                "failed",
+                "DEVICE_NOT_BINDABLE",
+                "设备号不正确",
+                "add_unprovisioned_not_registered",
+                user,
+            )
+            return fail_with_bind_risk(connection, data, "DEVICE_NOT_BINDABLE", "设备号不正确", user)
+        if device["bind_status"] == "bound":
+            if device["owner_user_id"] == user["id"]:
+                current_time = now_ms()
+                if is_device_provisioned(device):
+                    return fail("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", {"device": device_payload(device, user["phone"])})
+                name = (data.get("deviceName") or "").strip() or device["name"] or device["type_label"]
+                connection.execute(
+                    """
+                    UPDATE device_registry
+                    SET name = ?, provision_state = 'not_provisioned', online = 0, display_status = '未入网',
+                        last_seen_at = NULL, updated_at = ?
+                    WHERE device_no = ?
+                    """,
+                    (name, current_time, device["device_no"]),
+                )
+                updated = get_device(connection, device["device_no"])
+                return ok({"user": public_user(user), "device": device_payload(updated, user["phone"])}, "已加入我的设备，状态为未入网")
+            if device["owner_user_id"] or device["mock_scenario"] == "sale-bound-online":
+                record_bind_attempt(
+                    connection,
+                    data,
+                    input_device_no,
+                    device["device_no"],
+                    "failed",
+                    "DEVICE_ALREADY_BOUND",
+                    "设备已被绑定",
+                    "add_unprovisioned_bound_by_other",
+                    user,
+                )
+                return fail_with_bind_risk(connection, data, "DEVICE_ALREADY_BOUND", "设备已被绑定，请联系管理员解绑", user)
+
+        current_time = now_ms()
+        name = (data.get("deviceName") or "").strip() or device["type_label"]
+        connection.execute(
+            """
+            UPDATE device_registry
+            SET bind_status = 'bound', owner_user_id = ?, name = ?, provision_state = 'not_provisioned',
+                online = 0, display_status = '未入网', last_seen_at = NULL, config_json = '{}',
+                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
+                desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
+                applied_config_hash = NULL, pending_command_id = NULL, updated_at = ?
+            WHERE device_no = ?
+            """,
+            (user["id"], name, current_time, device["device_no"]),
+        )
+        record_bind_event(connection, device["device_no"], user["id"], "add_unprovisioned", "success")
+        record_bind_attempt(connection, data, input_device_no, device["device_no"], "success", "OK", "已加入未入网设备", "add_unprovisioned", user)
+        updated = get_device(connection, device["device_no"])
+        return ok({"user": public_user(user), "device": device_payload(updated, user["phone"])}, "已加入我的设备，状态为未入网")
+
+
 def device_unbind(data: dict[str, Any]) -> dict[str, Any]:
     device_no = normalize_device_no(data.get("deviceNo"))
     with db() as connection:
@@ -2240,10 +2372,10 @@ def device_unbind(data: dict[str, Any]) -> dict[str, Any]:
         connection.execute(
             """
             UPDATE device_registry
-            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, config_json = '{}',
-                config_state = 'unconfigured', desired_config_json = NULL, desired_config_version = 0,
-                desired_config_hash = NULL, applied_config_json = NULL, applied_config_version = 0,
-                applied_config_hash = NULL, pending_command_id = NULL,
+            SET bind_status = 'unbound', owner_user_id = NULL, name = ?, provision_state = 'provisioned',
+                config_json = '{}', config_state = 'unconfigured', desired_config_json = NULL,
+                desired_config_version = 0, desired_config_hash = NULL, applied_config_json = NULL,
+                applied_config_version = 0, applied_config_hash = NULL, pending_command_id = NULL,
                 last_watering_at = '--', last_synced_at = NULL, display_status = ?, updated_at = ?
             WHERE device_no = ?
             """,
@@ -2279,12 +2411,20 @@ def device_get_status(data: dict[str, Any]) -> dict[str, Any]:
             return forbidden
         config_view = device_config_view(device)
         capability_view = device_capability_view(device)
+        provisioned = is_device_provisioned(device)
+        online = bool(device["online"]) and provisioned
         return ok(
             {
                 "deviceNo": device["device_no"],
                 "deviceType": device["device_type"],
                 "status": get_display_status(device),
-                "online": bool(device["online"]),
+                "online": online,
+                "bindStatus": device["bind_status"],
+                "provisionState": device_provision_state(device),
+                "provisioned": provisioned,
+                "networkState": device_network_state({**device, "online": 1 if online else 0}),
+                "canConfigure": device["bind_status"] == "bound" and not provisioned,
+                "canBleControl": device["bind_status"] == "bound" and (not provisioned or not online),
                 **capability_view,
                 **config_view,
                 "runtimeState": json_loads(device.get("telemetry_json"), {}).get("state", {}),
@@ -2645,6 +2785,9 @@ def watering_save_config(data: dict[str, Any]) -> dict[str, Any]:
         if device["status"] != "registered":
             create_command(connection, user["id"], device_no, "watering.config.set", {"config": config}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
+        if not is_device_provisioned(device):
+            create_command(connection, user["id"], device_no, "watering.config.set", {"config": config}, "failed", "not_provisioned")
+            return fail("DEVICE_NOT_PROVISIONED", "设备未入网，请先配网")
         if not device["online"]:
             create_command(connection, user["id"], device_no, "watering.config.set", {"config": config}, "failed", "device_offline")
             return fail("DEVICE_OFFLINE", "设备离线，无法保存")
@@ -2705,6 +2848,9 @@ def watering_start_manual(data: dict[str, Any]) -> dict[str, Any]:
         if device["status"] != "registered":
             create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
+        if not is_device_provisioned(device):
+            create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "not_provisioned")
+            return fail("DEVICE_NOT_PROVISIONED", "设备未入网，请先配网")
         capabilities = device_capability_view(device)["capabilities"]
         if not watering_feature_supported(capabilities, "manualWatering"):
             create_command(connection, user["id"], device_no, "watering.manual.start", {"durationSeconds": duration_seconds}, "failed", "feature_unsupported")
@@ -2758,6 +2904,9 @@ def watering_stop_manual(data: dict[str, Any]) -> dict[str, Any]:
         if device["status"] != "registered":
             create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "device_disabled")
             return fail("DEVICE_DISABLED", "设备不可用")
+        if not is_device_provisioned(device):
+            create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "not_provisioned")
+            return fail("DEVICE_NOT_PROVISIONED", "设备未入网，请先配网")
         capabilities = device_capability_view(device)["capabilities"]
         if not watering_feature_supported(capabilities, "manualWatering"):
             create_command(connection, user["id"], device_no, "watering.manual.stop", {}, "failed", "feature_unsupported")
@@ -3537,6 +3686,7 @@ HANDLERS = {
     "user.getProfile": user_get_profile,
     "device.prepareConfigure": device_prepare_configure,
     "device.checkProvisionStatus": device_check_provision_status,
+    "device.addUnprovisioned": device_add_unprovisioned,
     "device.secureMessage": device_secure_message,
     "device.pullCommands": device_secure_message,
     "device.bind": device_bind,

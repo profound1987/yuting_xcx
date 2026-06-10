@@ -88,6 +88,7 @@ page {
 }
 
 .device-tip,
+.pin-tip,
 .wifi-card {
   margin-top: 18rpx;
   border: 1rpx solid #d7ecec;
@@ -97,6 +98,12 @@ page {
   font-size: 25rpx;
   line-height: 38rpx;
   padding: 18rpx;
+}
+
+.pin-tip {
+  background: #fff8e6;
+  border-color: #f0dba8;
+  color: #7a5b16;
 }
 
 .primary-button {

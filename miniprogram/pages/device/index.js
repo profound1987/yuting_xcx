@@ -1,7 +1,20 @@
 const SESSION_KEY = "yuntingSession";
 const DEVICES_KEY_PREFIX = "yuntingDevices";
 const MANUAL_DURATION_KEY_PREFIX = "yuntingManualDuration";
-const { callApi } = require("../../services/apiClient");
+const BLE_PIN_KEY_PREFIX = "yuntingBlePin";
+const DEVICE_LOCAL_STATE_KEY_PREFIX = "yuntingDeviceLocalState";
+const { callApi, apiConfig } = require("../../services/apiClient");
+const { createBleSecureFrame } = require("../../utils/blePinCrypto");
+
+const LOCAL_CONTROL_SERVICE_UUID = "0000FFF0-0000-1000-8000-00805F9B34FB";
+const LOCAL_CONTROL_WRITE_UUID = "0000FFF1-0000-1000-8000-00805F9B34FB";
+const LOCAL_CONTROL_NOTIFY_UUID = "0000FFF2-0000-1000-8000-00805F9B34FB";
+const BLE_WRITE_CHUNK_SIZE = 20;
+const BLE_WRITE_CHUNK_DELAY_MS = 50;
+const BLE_CONTROL_SCAN_TIMEOUT_MS = 12000;
+const BLE_CONTROL_ACK_TIMEOUT_MS = 30000;
+const BLE_CONTROL_ACK_BUFFER_MS = 10000;
+const DEVICE_PIN_PATTERN = /^\d{4,8}$/;
 
 const FEATURE_LABELS = {
   demandWatering: "按需浇水",
@@ -60,6 +73,21 @@ function setCachedManualDuration(deviceNo, duration) {
   wx.setStorageSync(getManualDurationKey(deviceNo), String(duration || ""));
 }
 
+function getBlePinKey(deviceNo) {
+  return `${BLE_PIN_KEY_PREFIX}_${deviceNo || "unknown"}`;
+}
+
+function getCachedBlePin(deviceNo) {
+  return normalizePin(wx.getStorageSync(getBlePinKey(deviceNo)) || "");
+}
+
+function setCachedBlePin(deviceNo, pin) {
+  const normalized = normalizePin(pin);
+  if (deviceNo && isValidPin(normalized)) {
+    wx.setStorageSync(getBlePinKey(deviceNo), normalized);
+  }
+}
+
 function formatTime(date) {
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -67,6 +95,149 @@ function formatTime(date) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePin(value) {
+  return String(value || "").trim();
+}
+
+function isValidPin(value) {
+  return DEVICE_PIN_PATTERN.test(normalizePin(value));
+}
+
+function stringToUtf8Bytes(text) {
+  const encoded = encodeURIComponent(text);
+  const bytes = [];
+  for (let index = 0; index < encoded.length; index += 1) {
+    const char = encoded[index];
+    if (char === "%") {
+      bytes.push(parseInt(encoded.slice(index + 1, index + 3), 16));
+      index += 2;
+    } else {
+      bytes.push(char.charCodeAt(0));
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+function toBufferChunks(bytes, chunkSize) {
+  const chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const end = Math.min(offset + chunkSize, bytes.length);
+    const chunk = new Uint8Array(end - offset);
+    chunk.set(bytes.subarray(offset, end));
+    chunks.push(chunk.buffer);
+  }
+  return chunks;
+}
+
+function encodePayloadChunks(payload) {
+  const bytes = stringToUtf8Bytes(`${JSON.stringify(payload)}\n`);
+  return toBufferChunks(bytes, BLE_WRITE_CHUNK_SIZE);
+}
+
+function arrayBufferToBytes(buffer) {
+  if (!buffer) {
+    return [];
+  }
+  try {
+    return Array.prototype.slice.call(new Uint8Array(buffer));
+  } catch (error) {
+    return [];
+  }
+}
+
+function bytesToText(bytes) {
+  if (!bytes || !bytes.length) {
+    return "";
+  }
+  const encoded = bytes.map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+  try {
+    return decodeURIComponent(encoded).replace(/\u0000/g, "").trim();
+  } catch (error) {
+    return bytes.map((byte) => (byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : "")).join("").trim();
+  }
+}
+
+function bytesToRawText(bytes) {
+  if (!bytes || !bytes.length) {
+    return "";
+  }
+  const encoded = bytes.map((byte) => `%${byte.toString(16).padStart(2, "0")}`).join("");
+  try {
+    return decodeURIComponent(encoded).replace(/\u0000/g, "");
+  } catch (error) {
+    return bytes.map((byte) => (byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : "")).join("");
+  }
+}
+
+function bufferToText(buffer) {
+  return bytesToRawText(arrayBufferToBytes(buffer));
+}
+
+function normalizeUuid(value) {
+  return String(value || "").toUpperCase();
+}
+
+function createBleCommandId() {
+  return `ble_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function getBleAckStatus(payload) {
+  return String((payload && (payload.status || payload.state)) || "").trim().toLowerCase();
+}
+
+function isBleAckSuccess(payload) {
+  const status = getBleAckStatus(payload);
+  const code = String((payload && payload.code) || "").trim().toUpperCase();
+  if (status) {
+    return status === "succeeded" || status === "success" || status === "completed" || status === "done";
+  }
+  return code === "OK";
+}
+
+function isBleAckFailure(payload) {
+  const status = getBleAckStatus(payload);
+  const code = String((payload && payload.code) || "").trim().toUpperCase();
+  return status === "failed" || status === "fail" || status === "error" || /FAILED|ERROR|TIMEOUT|INVALID|EXPIRED|DENIED/.test(code);
+}
+
+function getBleAckMessage(payload, fallback) {
+  return (payload && payload.message) || fallback || "设备已完成命令";
+}
+
+function getBleCommandAckTimeout(options) {
+  const duration = Number((options && (options.duration || (options.params && options.params.durationSeconds))) || 0);
+  if (duration > 0) {
+    return Math.max(BLE_CONTROL_ACK_TIMEOUT_MS, duration * 1000 + BLE_CONTROL_ACK_BUFFER_MS);
+  }
+  return BLE_CONTROL_ACK_TIMEOUT_MS;
+}
+
+function getAdvertisedName(advertisData) {
+  const bytes = arrayBufferToBytes(advertisData);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const length = bytes[offset];
+    if (!length) {
+      break;
+    }
+    const type = bytes[offset + 1];
+    const dataStart = offset + 2;
+    const dataEnd = Math.min(offset + 1 + length, bytes.length);
+    if ((type === 0x08 || type === 0x09) && dataEnd > dataStart) {
+      const name = bytesToText(bytes.slice(dataStart, dataEnd));
+      if (name) {
+        return name;
+      }
+    }
+    offset += length + 1;
+  }
+  return "";
 }
 
 function normalizeInteger(value, min, max) {
@@ -83,13 +254,28 @@ function normalizeInteger(value, min, max) {
   return number;
 }
 
+function isDeviceProvisioned(device) {
+  return !(device && (device.provisioned === false || device.provisionState === "not_provisioned" || device.networkState === "not_provisioned" || device.status === "未入网"));
+}
+
 function isDeviceOnline(device) {
-  return !!(device && device.online !== false && device.status !== "离线");
+  return !!(device && isDeviceProvisioned(device) && device.online !== false && device.status !== "离线");
+}
+
+function canUseBleControl(device) {
+  return !!(device && (device.canBleControl || !isDeviceOnline(device) || !isDeviceProvisioned(device)));
+}
+
+function shouldUseBleControl(device) {
+  return !!(device && (!isDeviceProvisioned(device) || !isDeviceOnline(device)));
 }
 
 function getSyncText(device) {
+  if (!isDeviceProvisioned(device)) {
+    return "未入网";
+  }
   if (!isDeviceOnline(device)) {
-    return "离线只读";
+    return "离线可蓝牙控制";
   }
   const state = device && device.configState ? device.configState : "unconfigured";
   if (state === "unconfigured") {
@@ -310,6 +496,123 @@ function normalizeConfig(config) {
   };
 }
 
+function hasConfigContent(config) {
+  const normalizedConfig = normalizeConfig(config || {});
+  return !!(
+    normalizedConfig.automationMode
+    || (normalizedConfig.enabledFeatures && normalizedConfig.enabledFeatures.length)
+    || (normalizedConfig.features && Object.keys(normalizedConfig.features).length)
+  );
+}
+
+function simpleStableHash(value) {
+  const text = JSON.stringify(value || {});
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function buildLocalConfigParams(device, config) {
+  const currentVersion = Number((device && (device.appliedConfigVersion || device.desiredConfigVersion)) || 0);
+  return {
+    configVersion: currentVersion + 1,
+    configHash: `ble-${simpleStableHash(config)}`,
+    config,
+  };
+}
+
+function getDeviceLocalStateKey(deviceNo) {
+  return `${DEVICE_LOCAL_STATE_KEY_PREFIX}_${deviceNo || "unknown"}`;
+}
+
+function getCachedDeviceLocalState(deviceNo) {
+  const state = wx.getStorageSync(getDeviceLocalStateKey(deviceNo));
+  return state && typeof state === "object" ? state : {};
+}
+
+function setCachedDeviceLocalState(deviceNo, patch) {
+  if (!deviceNo || !patch || typeof patch !== "object") {
+    return;
+  }
+  const current = getCachedDeviceLocalState(deviceNo);
+  wx.setStorageSync(getDeviceLocalStateKey(deviceNo), Object.assign({}, current, patch, { updatedAt: Date.now() }));
+}
+
+function getConfigSnapshotForDevice(device) {
+  const config = device && (device.appliedConfig || device.desiredConfig || device.config);
+  return hasConfigContent(config) ? config : null;
+}
+
+function cacheDeviceLocalFields(device) {
+  if (!device || !device.deviceNo) {
+    return;
+  }
+  const patch = {};
+  const config = getConfigSnapshotForDevice(device);
+  if (config && device.configState === "synced") {
+    patch.config = device.config || config;
+    patch.desiredConfig = device.desiredConfig || config;
+    patch.appliedConfig = device.appliedConfig || config;
+    patch.configState = device.configState || "synced";
+    patch.desiredConfigVersion = device.desiredConfigVersion || 0;
+    patch.appliedConfigVersion = device.appliedConfigVersion || 0;
+    patch.desiredConfigHash = device.desiredConfigHash || "";
+    patch.appliedConfigHash = device.appliedConfigHash || "";
+    patch.lastSyncedAt = device.lastSyncedAt || "";
+  }
+  if (device.lastWateringAt) {
+    patch.lastWateringAt = device.lastWateringAt;
+  }
+  if (Object.keys(patch).length) {
+    setCachedDeviceLocalState(device.deviceNo, patch);
+  }
+}
+
+function isLocalStateNewer(localState, device) {
+  const localUpdatedAt = Number((localState && localState.updatedAt) || 0);
+  const remoteUpdatedAt = Number((device && device.updatedAt) || 0);
+  return !!(localUpdatedAt && (!remoteUpdatedAt || localUpdatedAt >= remoteUpdatedAt));
+}
+
+function mergeLocalDeviceState(device) {
+  if (!device || !device.deviceNo) {
+    return device;
+  }
+  const localState = getCachedDeviceLocalState(device.deviceNo);
+  if (!localState || !Object.keys(localState).length) {
+    return device;
+  }
+  const nextDevice = Object.assign({}, device);
+  const localConfig = localState.appliedConfig || localState.desiredConfig || localState.config;
+  const remoteConfig = device.appliedConfig || device.desiredConfig || device.config;
+  const localStateNewer = isLocalStateNewer(localState, device);
+  const shouldUseLocalConfig = hasConfigContent(localConfig) && (
+    localStateNewer
+    || !isDeviceOnline(device)
+    || !hasConfigContent(remoteConfig)
+    || device.configState === "unconfigured"
+  );
+  if (shouldUseLocalConfig) {
+    nextDevice.config = localState.config || localConfig;
+    nextDevice.desiredConfig = localState.desiredConfig || localConfig;
+    nextDevice.appliedConfig = localState.appliedConfig || localConfig;
+    nextDevice.configState = localState.configState || "synced";
+    nextDevice.desiredConfigVersion = localState.desiredConfigVersion || nextDevice.desiredConfigVersion || 0;
+    nextDevice.appliedConfigVersion = localState.appliedConfigVersion || nextDevice.appliedConfigVersion || 0;
+    nextDevice.desiredConfigHash = localState.desiredConfigHash || nextDevice.desiredConfigHash || "";
+    nextDevice.appliedConfigHash = localState.appliedConfigHash || nextDevice.appliedConfigHash || "";
+    nextDevice.pendingCommandId = localState.pendingCommandId || "";
+    nextDevice.lastSyncedAt = localState.lastSyncedAt || nextDevice.lastSyncedAt;
+  }
+  if (localState.lastWateringAt && (!nextDevice.lastWateringAt || localStateNewer || !isDeviceOnline(device) || String(localState.lastWateringAt) > String(nextDevice.lastWateringAt))) {
+    nextDevice.lastWateringAt = localState.lastWateringAt;
+  }
+  return nextDevice;
+}
+
 function configSourceForDevice(device) {
   const state = device && device.configState ? device.configState : "unconfigured";
   if (state === "unconfigured") {
@@ -384,7 +687,7 @@ function buildWateringUi(device, preferredFeature, currentState) {
     manualDuration: cachedManualDuration || "",
     manualProgressPercent: 0,
     capabilityReady,
-    canSaveConfig: selectedIsAuto && isDeviceOnline(device),
+    canSaveConfig: selectedIsAuto && (isDeviceOnline(device) || canUseBleControl(device)),
   };
 }
 
@@ -392,7 +695,7 @@ function buildDeviceState(device, preferredFeature, currentState) {
   const nextDevice = prepareDeviceForUi(device);
   const baseState = {
     device: nextDevice,
-    canEdit: isDeviceOnline(nextDevice),
+    canEdit: isDeviceOnline(nextDevice) || canUseBleControl(nextDevice),
     syncText: getSyncText(nextDevice),
   };
   if (nextDevice.type !== "watering") {
@@ -446,6 +749,12 @@ Page({
     commandCountdownLeft: 0,
     commandCountdownTotal: 0,
     commandCountdownText: "",
+    commandStep1Text: "已提交给服务器",
+    commandStep2Text: "设备已接收",
+    commandStep3Text: "设备已完成",
+    blePinDialogVisible: false,
+    blePinInput: "",
+    blePinError: "",
   },
 
   onLoad(options) {
@@ -469,6 +778,7 @@ Page({
     this.clearManualTimer();
     this.clearCommandPollTimer();
     this.clearCommandCountdownTimer();
+    this.cleanupBleControlNotify();
   },
 
   loadDevice(id) {
@@ -479,7 +789,12 @@ Page({
       setTimeout(() => wx.navigateBack(), 800);
       return;
     }
-    this.setData(buildDeviceState(device, "", this.data));
+    const cachedPin = getCachedBlePin(device.deviceNo);
+    const withCachedPin = isValidPin(device.blePin) || !isValidPin(cachedPin)
+      ? device
+      : Object.assign({}, device, { blePin: cachedPin });
+    const nextDevice = mergeLocalDeviceState(withCachedPin);
+    this.setData(buildDeviceState(nextDevice, "", this.data));
     this.refreshDeviceStatus(false);
   },
 
@@ -501,26 +816,37 @@ Page({
       }
 
       const statusData = resp.data;
-      const nextDevice = Object.assign({}, this.data.device, {
-        status: statusData.status || this.data.device.status,
-        online: statusData.online !== false,
-        config: statusData.config || {},
-        configState: statusData.configState || this.data.device.configState || "unconfigured",
-        desiredConfig: statusData.desiredConfig || null,
-        appliedConfig: statusData.appliedConfig || null,
-        desiredConfigVersion: statusData.desiredConfigVersion || 0,
-        appliedConfigVersion: statusData.appliedConfigVersion || 0,
-        pendingCommandId: statusData.pendingCommandId || "",
-        capabilityState: statusData.capabilityState || this.data.device.capabilityState,
-        capabilities: statusData.capabilities || this.data.device.capabilities || {},
-        telemetry: statusData.telemetry || this.data.device.telemetry || {},
-        runtimeState: statusData.runtimeState || this.data.device.runtimeState || {},
-        lastWateringAt: statusData.lastWateringAt || this.data.device.lastWateringAt,
-        lastSyncedAt: statusData.lastSyncedAt || this.data.device.lastSyncedAt,
-        updatedAt: statusData.updatedAt || this.data.device.updatedAt,
+      const currentDevice = this.data.device || {};
+      const statusOnline = statusData.online !== false;
+      const localConfig = currentDevice.config || currentDevice.desiredConfig || currentDevice.appliedConfig || {};
+      const preserveLocalConfig = !statusOnline && hasConfigContent(localConfig);
+      const nextDevice = Object.assign({}, currentDevice, {
+        status: statusData.status || currentDevice.status,
+        online: statusOnline,
+        bindStatus: statusData.bindStatus || currentDevice.bindStatus,
+        provisionState: statusData.provisionState || currentDevice.provisionState || "provisioned",
+        provisioned: statusData.provisioned !== false,
+        networkState: statusData.networkState || currentDevice.networkState || (statusData.online === false ? "offline" : "online"),
+        canConfigure: !!statusData.canConfigure,
+        canBleControl: !!statusData.canBleControl,
+        config: preserveLocalConfig ? localConfig : (statusData.config || currentDevice.config || {}),
+        configState: preserveLocalConfig ? (currentDevice.configState || statusData.configState || "unconfigured") : (statusData.configState || currentDevice.configState || "unconfigured"),
+        desiredConfig: preserveLocalConfig ? (currentDevice.desiredConfig || localConfig) : (statusData.desiredConfig || currentDevice.desiredConfig || null),
+        appliedConfig: preserveLocalConfig ? (currentDevice.appliedConfig || localConfig) : (statusData.appliedConfig || currentDevice.appliedConfig || null),
+        desiredConfigVersion: preserveLocalConfig ? (currentDevice.desiredConfigVersion || statusData.desiredConfigVersion || 0) : (statusData.desiredConfigVersion || 0),
+        appliedConfigVersion: preserveLocalConfig ? (currentDevice.appliedConfigVersion || statusData.appliedConfigVersion || 0) : (statusData.appliedConfigVersion || 0),
+        pendingCommandId: preserveLocalConfig ? (currentDevice.pendingCommandId || statusData.pendingCommandId || "") : (statusData.pendingCommandId || ""),
+        capabilityState: statusData.capabilityState || currentDevice.capabilityState,
+        capabilities: statusData.capabilities || currentDevice.capabilities || {},
+        telemetry: statusData.telemetry || currentDevice.telemetry || {},
+        runtimeState: statusData.runtimeState || currentDevice.runtimeState || {},
+        lastWateringAt: statusData.lastWateringAt || currentDevice.lastWateringAt,
+        lastSyncedAt: preserveLocalConfig ? (currentDevice.lastSyncedAt || statusData.lastSyncedAt) : (statusData.lastSyncedAt || currentDevice.lastSyncedAt),
+        updatedAt: statusData.updatedAt || currentDevice.updatedAt,
       });
 
-      this.setData(buildDeviceState(nextDevice, this.data.selectedFeature, this.data));
+      const mergedDevice = mergeLocalDeviceState(nextDevice);
+      this.setData(buildDeviceState(mergedDevice, this.data.selectedFeature, this.data));
       this.persistDevice(false);
     }).catch(() => {
       if (showLoading) {
@@ -535,22 +861,33 @@ Page({
 
   ensureEditable() {
     if (!this.data.canEdit) {
-      wx.showToast({ title: "设备离线，无法编辑", icon: "none" });
+      wx.showToast({ title: "设备不可控制", icon: "none" });
       return false;
     }
     return true;
   },
 
+  goConfigure() {
+    const device = this.data.device;
+    if (!device || !device.deviceNo) {
+      return;
+    }
+    const pin = normalizePin(device.blePin || getCachedBlePin(device.deviceNo));
+    const pinQuery = isValidPin(pin) ? `&pin=${encodeURIComponent(pin)}` : "";
+    wx.navigateTo({ url: `/pages/configure/index?deviceNo=${encodeURIComponent(device.deviceNo)}&deviceName=${encodeURIComponent(device.name || "")}${pinQuery}` });
+  },
+
   selectFeature(e) {
-    if (!this.ensureEditable() || this.data.manualRunning || this.data.commandBusy) {
+    if (!this.data.canEdit || this.data.manualRunning || this.data.commandBusy) {
       return;
     }
     const feature = e.currentTarget.dataset.feature;
+    const selectedIsAuto = !!AUTO_FEATURES[feature];
     this.setData({
       selectedFeature: feature,
       selectedIsManual: feature === "manualWatering",
-      selectedIsAuto: !!AUTO_FEATURES[feature],
-      canSaveConfig: !!AUTO_FEATURES[feature] && this.data.canEdit,
+      selectedIsAuto,
+      canSaveConfig: selectedIsAuto && (isDeviceOnline(this.data.device) || canUseBleControl(this.data.device)),
       modeText: FEATURE_LABELS[feature] || "设备管理",
     });
   },
@@ -566,6 +903,9 @@ Page({
 
   onManualDurationInput(e) {
     if (!this.data.canEdit || this.data.commandBusy) {
+      return;
+    }
+    if (shouldUseBleControl(this.data.device) && this.data.selectedFeature !== "manualWatering") {
       return;
     }
     const value = e.detail.value;
@@ -627,6 +967,22 @@ Page({
       },
     };
 
+    if (shouldUseBleControl(this.data.device)) {
+      const localConfigParams = buildLocalConfigParams(this.data.device, nextConfig);
+      this.executeBleControlCommand({
+        kind: "config",
+        title: "蓝牙保存设置",
+        commandType: "watering.config.set",
+        params: localConfigParams,
+        config: nextConfig,
+        configVersion: localConfigParams.configVersion,
+        configHash: localConfigParams.configHash,
+        feature,
+        successText: "设备已保存本地浇水设置",
+      });
+      return;
+    }
+
     this.openCommandDialog("config", "保存设置", "正在提交配置命令");
     callApi("watering.saveConfig", {
       phone: this.data.phone,
@@ -679,13 +1035,84 @@ Page({
 
   persistDevice(showToast) {
     const devices = getStoredDevices(this.data.phone);
-    const updatedDevices = devices.map((item) => (
-      item.id === this.data.device.id ? this.data.device : item
-    ));
+    const updatedDevices = devices.map((item) => {
+      if (item.id !== this.data.device.id) {
+        return item;
+      }
+      const nextItem = Object.assign({}, item, this.data.device);
+      const pin = normalizePin(this.data.device.blePin || item.blePin || getCachedBlePin(this.data.device.deviceNo));
+      if (isValidPin(pin)) {
+        nextItem.blePin = pin;
+        setCachedBlePin(nextItem.deviceNo, pin);
+      }
+      cacheDeviceLocalFields(nextItem);
+      return nextItem;
+    });
     setStoredDevices(this.data.phone, updatedDevices);
     if (showToast) {
       wx.showToast({ title: "已保存" });
     }
+  },
+
+  promptBlePin(device) {
+    return new Promise((resolve, reject) => {
+      this.blePinResolve = resolve;
+      this.blePinReject = reject;
+      this.blePinPromptDevice = device;
+      this.setData({
+        blePinDialogVisible: true,
+        blePinInput: "",
+        blePinError: "",
+      });
+    });
+  },
+
+  onBlePinInput(e) {
+    this.setData({ blePinInput: normalizePin(e.detail.value), blePinError: "" });
+  },
+
+  cancelBlePinDialog() {
+    const reject = this.blePinReject;
+    this.blePinResolve = null;
+    this.blePinReject = null;
+    this.blePinPromptDevice = null;
+    this.setData({ blePinDialogVisible: false, blePinInput: "", blePinError: "" });
+    if (reject) {
+      reject(new Error("已取消蓝牙控制"));
+    }
+  },
+
+  confirmBlePinDialog() {
+    const pin = normalizePin(this.data.blePinInput);
+    if (!isValidPin(pin)) {
+      this.setData({ blePinError: "请输入设备标签上的 4-8 位数字 PIN" });
+      return;
+    }
+    const resolve = this.blePinResolve;
+    const device = this.blePinPromptDevice || this.data.device;
+    const nextDevice = Object.assign({}, device, { blePin: pin });
+    this.blePinResolve = null;
+    this.blePinReject = null;
+    this.blePinPromptDevice = null;
+    setCachedBlePin(nextDevice.deviceNo, pin);
+    this.setData({ device: nextDevice, blePinDialogVisible: false, blePinInput: "", blePinError: "" });
+    this.persistDevice(false);
+    if (resolve) {
+      resolve(pin);
+    }
+  },
+
+  ensureBlePin(device) {
+    const pin = normalizePin((device && device.blePin) || getCachedBlePin(device && device.deviceNo));
+    if (isValidPin(pin)) {
+      if (!device.blePin) {
+        const nextDevice = Object.assign({}, device, { blePin: pin });
+        this.setData({ device: nextDevice });
+        this.persistDevice(false);
+      }
+      return Promise.resolve(pin);
+    }
+    return this.promptBlePin(device);
   },
 
   openCommandDialog(kind, title, text) {
@@ -699,6 +1126,9 @@ Page({
       commandDialogProgress: 10,
       commandDialogColor: COMMAND_COLORS.running,
       commandDialogClosable: false,
+      commandStep1Text: "已提交给服务器",
+      commandStep2Text: "设备已接收",
+      commandStep3Text: "设备已完成",
       commandCountdownVisible: false,
       commandCountdownLeft: 0,
       commandCountdownTotal: 0,
@@ -782,6 +1212,17 @@ Page({
     }
     setCachedManualDuration(this.data.device.deviceNo, duration);
 
+    if (shouldUseBleControl(this.data.device)) {
+      this.executeBleControlCommand({
+        kind: "manualStart",
+        title: "蓝牙浇水",
+        commandType: "watering.manual.start",
+        params: { durationSeconds: duration },
+        duration,
+      });
+      return;
+    }
+
     this.openCommandDialog("manualStart", "开始浇水", "正在提交手动浇水命令");
     callApi("watering.startManual", {
       phone: this.data.phone,
@@ -836,6 +1277,15 @@ Page({
     if (!this.ensureEditable() || this.data.commandBusy) {
       return;
     }
+    if (shouldUseBleControl(this.data.device)) {
+      this.executeBleControlCommand({
+        kind: "manualStop",
+        title: "蓝牙停止浇水",
+        commandType: "watering.manual.stop",
+        params: {},
+      });
+      return;
+    }
     this.openCommandDialog("manualStop", "停止浇水", "正在提交停止命令");
     callApi("watering.stopManual", {
       phone: this.data.phone,
@@ -882,6 +1332,390 @@ Page({
     }).catch(() => {
       this.failCommandBeforeAccepted("停止失败，请检查网络");
     });
+  },
+
+  openBleControlDialog(title, text) {
+    this.setData({
+      commandBusy: true,
+      activeCommandKind: "bleControl",
+      commandDialogVisible: true,
+      commandDialogTitle: title || "蓝牙控制",
+      commandDialogText: text || "正在扫描蓝牙设备",
+      commandDialogStatus: "running",
+      commandDialogProgress: 33,
+      commandDialogColor: COMMAND_COLORS.running,
+      commandDialogClosable: false,
+      commandCountdownVisible: false,
+      commandCountdownLeft: 0,
+      commandCountdownTotal: 0,
+      commandStep1Text: "扫描蓝牙设备",
+      commandStep2Text: "将数据发送给设备",
+      commandStep3Text: "最终结果",
+    });
+  },
+
+  async executeBleControlCommand(options) {
+    const device = this.data.device;
+    let bleDevice = null;
+    this.openBleControlDialog(options.title, "正在扫描蓝牙设备...");
+    try {
+      const blePin = await this.ensureBlePin(device);
+      bleDevice = await this.scanBleControlDevice(device);
+      this.setData({ commandDialogText: "已发现蓝牙设备，正在发送控制数据", commandDialogProgress: 66 });
+      const cmdId = createBleCommandId();
+      const payload = {
+        type: "local.command",
+        cmdId,
+        deviceNo: device.deviceNo,
+        commandType: options.commandType,
+        ttlSeconds: options.ttlSeconds || 30,
+        params: options.params || {},
+        source: "ble",
+        ts: Date.now(),
+      };
+      const frame = createBleSecureFrame({
+        deviceNo: device.deviceNo,
+        pin: blePin,
+        msgType: "local.command",
+        payload,
+      });
+      await this.sendBleControlPayload(bleDevice, frame, {
+        cmdId,
+        commandType: options.commandType,
+        timeoutMs: getBleCommandAckTimeout(options),
+        manualStart: options.kind === "manualStart",
+        duration: options.duration,
+      });
+      this.finishBleControlSuccess(options);
+    } catch (error) {
+      this.clearCommandCountdownTimer();
+      this.setData({
+        commandBusy: false,
+        commandDialogTitle: "执行失败",
+        commandDialogText: (error && error.message) || "蓝牙控制失败，请靠近设备后重试",
+        commandDialogStatus: "failed",
+        commandDialogProgress: Math.max(10, Math.min(this.data.commandDialogProgress || 10, 66)),
+        commandDialogColor: COMMAND_COLORS.failed,
+        commandDialogClosable: true,
+        commandCountdownVisible: false,
+        commandCountdownLeft: 0,
+        commandCountdownTotal: 0,
+        commandCountdownText: "",
+        manualRunning: false,
+        manualLeft: 0,
+        manualProgressPercent: 0,
+      });
+    } finally {
+      if (bleDevice && bleDevice.deviceId) {
+        this.closeBleControlConnection(bleDevice.deviceId);
+      } else {
+        this.cleanupBleControlNotify();
+      }
+    }
+  },
+
+  finishBleControlSuccess(options) {
+    this.clearCommandCountdownTimer();
+    const currentDevice = this.data.device || {};
+    let nextDevice = Object.assign({}, currentDevice, { updatedAt: Date.now() });
+    let preferredFeature = this.data.selectedFeature;
+    let successText = options.successText || "设备已完成蓝牙本地控制命令";
+    const extraState = {
+      manualDuration: this.data.manualDuration,
+      manualRunning: false,
+      manualLeft: 0,
+      manualTotal: this.data.manualTotal,
+      manualProgressPercent: this.data.manualProgressPercent,
+    };
+
+    if (options.kind === "manualStart") {
+      preferredFeature = "manualWatering";
+      successText = options.successText || "浇水已完成，设备返回执行成功";
+      nextDevice = Object.assign(nextDevice, {
+        lastWateringAt: formatTime(new Date()),
+        syncState: "succeeded",
+      });
+      extraState.manualDuration = String(options.duration || this.data.manualDuration || "");
+      extraState.manualTotal = Number(options.duration || 0);
+      extraState.manualProgressPercent = 100;
+    } else if (options.kind === "manualStop") {
+      preferredFeature = "manualWatering";
+      successText = options.successText || "设备已停止浇水";
+      extraState.manualTotal = 0;
+      extraState.manualProgressPercent = 0;
+    } else if (options.kind === "config") {
+      const config = options.config || this.data.configDraft;
+      preferredFeature = options.feature || this.data.selectedFeature;
+      successText = options.successText || "设备已保存本地设置";
+      nextDevice = Object.assign(nextDevice, {
+        config,
+        desiredConfig: config,
+        appliedConfig: config,
+        desiredConfigVersion: options.configVersion || currentDevice.desiredConfigVersion || 0,
+        appliedConfigVersion: options.configVersion || currentDevice.appliedConfigVersion || 0,
+        desiredConfigHash: options.configHash || currentDevice.desiredConfigHash || "",
+        appliedConfigHash: options.configHash || currentDevice.appliedConfigHash || "",
+        configState: "synced",
+        pendingCommandId: "",
+        lastSyncedAt: formatTime(new Date()),
+      });
+    }
+
+    cacheDeviceLocalFields(nextDevice);
+    this.setData(Object.assign(buildDeviceState(nextDevice, preferredFeature, this.data), extraState, {
+      commandBusy: false,
+      activeCommandId: "",
+      activeCommandKind: "",
+      commandDialogVisible: true,
+      commandDialogTitle: "执行成功",
+      commandDialogText: successText,
+      commandDialogStatus: "success",
+      commandDialogProgress: 100,
+      commandDialogColor: COMMAND_COLORS.success,
+      commandDialogClosable: true,
+      commandCountdownVisible: false,
+      commandCountdownLeft: 0,
+      commandCountdownTotal: 0,
+      commandCountdownText: "",
+    }));
+    this.persistDevice(false);
+  },
+
+  scanBleControlDevice(device) {
+    return new Promise((resolve, reject) => {
+      if (apiConfig.mode === "mock") {
+        setTimeout(() => resolve({ deviceId: "mock-ble-control", name: `ytsh-${String((device && device.deviceSerial) || "device").toLowerCase()}` }), 500);
+        return;
+      }
+      if (!wx.openBluetoothAdapter || !wx.startBluetoothDevicesDiscovery) {
+        reject(new Error("当前设备不支持蓝牙控制"));
+        return;
+      }
+      let finished = false;
+      let timer = null;
+      const serial = String((device && device.deviceSerial) || "").toLowerCase();
+      const deviceNo = String((device && device.deviceNo) || "").toLowerCase();
+      const finish = (error, result) => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        try {
+          wx.stopBluetoothDevicesDiscovery({});
+        } catch (ignore) {}
+        try {
+          wx.offBluetoothDeviceFound && wx.offBluetoothDeviceFound(handler);
+        } catch (ignore) {}
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      };
+      const matchesDevice = (item) => {
+        const name = String((item && (item.name || item.localName || getAdvertisedName(item.advertisData))) || "").toLowerCase();
+        if (!name || name.indexOf("ytsh") !== 0) {
+          return false;
+        }
+        return !serial || name.indexOf(serial) >= 0 || name.indexOf(deviceNo) >= 0;
+      };
+      const handler = (res) => {
+        const devices = res.devices || [];
+        const matched = devices.find((item) => matchesDevice(item));
+        if (matched) {
+          finish(null, matched);
+        }
+      };
+      wx.openBluetoothAdapter({
+        success: () => {
+          wx.offBluetoothDeviceFound && wx.offBluetoothDeviceFound();
+          wx.onBluetoothDeviceFound(handler);
+          wx.startBluetoothDevicesDiscovery({
+            allowDuplicatesKey: true,
+            interval: 0,
+            powerLevel: "high",
+            success: () => {
+              timer = setTimeout(() => finish(new Error("未扫描到蓝牙设备，请确认设备在附近并处于可连接状态")), BLE_CONTROL_SCAN_TIMEOUT_MS);
+            },
+            fail: () => finish(new Error("蓝牙扫描失败，请开启蓝牙后重试")),
+          });
+        },
+        fail: () => finish(new Error("请先开启手机蓝牙")),
+      });
+    });
+  },
+
+  async sendBleControlPayload(bleDevice, payload, ackOptions) {
+    if (apiConfig.mode === "mock") {
+      await delay(500);
+      return { type: "local.command.ack", status: "succeeded", code: "OK" };
+    }
+    const chunks = encodePayloadChunks(payload);
+    await new Promise((resolve, reject) => {
+      wx.createBLEConnection({
+        deviceId: bleDevice.deviceId,
+        timeout: 10000,
+        success: resolve,
+        fail: () => reject(new Error("蓝牙连接失败，请靠近设备后重试")),
+      });
+    });
+    await this.setupBleControlNotify(bleDevice.deviceId);
+    const ackPromise = this.waitForBleControlAck(ackOptions || {}, (ackOptions && ackOptions.timeoutMs) || BLE_CONTROL_ACK_TIMEOUT_MS);
+    for (let index = 0; index < chunks.length; index += 1) {
+      await new Promise((resolve, reject) => {
+        wx.writeBLECharacteristicValue({
+          deviceId: bleDevice.deviceId,
+          serviceId: LOCAL_CONTROL_SERVICE_UUID,
+          characteristicId: LOCAL_CONTROL_WRITE_UUID,
+          value: chunks[index],
+          success: resolve,
+          fail: () => reject(new Error("蓝牙数据发送失败，请重试")),
+        });
+      });
+      await delay(BLE_WRITE_CHUNK_DELAY_MS);
+    }
+    this.setData({ commandDialogText: "控制数据已发送，等待设备执行完成", commandDialogProgress: 85 });
+    if (ackOptions && ackOptions.manualStart) {
+      this.startManualCommandCountdown(ackOptions.duration);
+    }
+    return ackPromise;
+  },
+
+  setupBleControlNotify(deviceId) {
+    if (!wx.notifyBLECharacteristicValueChange || !wx.onBLECharacteristicValueChange) {
+      return Promise.reject(new Error("当前设备不支持蓝牙 ACK 回传"));
+    }
+    this.cleanupBleControlNotify();
+    this.bleControlDeviceId = deviceId;
+    this.bleControlTextBuffer = "";
+    this.bleControlNotifyHandler = (res) => this.handleBleControlNotify(res);
+    wx.onBLECharacteristicValueChange(this.bleControlNotifyHandler);
+    return new Promise((resolve, reject) => {
+      wx.notifyBLECharacteristicValueChange({
+        deviceId,
+        serviceId: LOCAL_CONTROL_SERVICE_UUID,
+        characteristicId: LOCAL_CONTROL_NOTIFY_UUID,
+        state: true,
+        success: resolve,
+        fail: () => reject(new Error("设备未开启蓝牙 ACK 回传")),
+      });
+    });
+  },
+
+  cleanupBleControlNotify() {
+    if (this.bleControlAckTimer) {
+      clearTimeout(this.bleControlAckTimer);
+      this.bleControlAckTimer = null;
+    }
+    this.bleControlAckResolve = null;
+    this.bleControlAckReject = null;
+    this.bleControlAckOptions = null;
+    if (this.bleControlNotifyHandler && wx.offBLECharacteristicValueChange) {
+      try {
+        wx.offBLECharacteristicValueChange(this.bleControlNotifyHandler);
+      } catch (error) {}
+    }
+    this.bleControlNotifyHandler = null;
+    this.bleControlTextBuffer = "";
+    this.bleControlDeviceId = "";
+  },
+
+  waitForBleControlAck(options, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      this.bleControlAckOptions = options || {};
+      this.bleControlAckResolve = resolve;
+      this.bleControlAckReject = reject;
+      this.bleControlAckTimer = setTimeout(() => {
+        this.bleControlAckTimer = null;
+        this.bleControlAckResolve = null;
+        this.bleControlAckReject = null;
+        this.bleControlAckOptions = null;
+        reject(new Error("等待设备执行完成超时"));
+      }, timeoutMs);
+    });
+  },
+
+  handleBleControlNotify(res) {
+    if (this.bleControlDeviceId && res.deviceId && res.deviceId !== this.bleControlDeviceId) {
+      return;
+    }
+    if (res.characteristicId && normalizeUuid(res.characteristicId) !== normalizeUuid(LOCAL_CONTROL_NOTIFY_UUID)) {
+      return;
+    }
+    const text = bufferToText(res.value);
+    if (!text) {
+      return;
+    }
+    this.bleControlTextBuffer = `${this.bleControlTextBuffer || ""}${text}`;
+    const parts = this.bleControlTextBuffer.split("\n");
+    this.bleControlTextBuffer = parts.pop() || "";
+    parts.forEach((part) => this.handleBleControlNotifyLine(part));
+
+    const buffered = (this.bleControlTextBuffer || "").trim();
+    if (buffered[0] === "{" && buffered[buffered.length - 1] === "}") {
+      this.bleControlTextBuffer = "";
+      this.handleBleControlNotifyLine(buffered);
+    }
+  },
+
+  handleBleControlNotifyLine(line) {
+    const text = String(line || "").trim();
+    if (!text) {
+      return;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      return;
+    }
+    if (payload.type !== "local.command.ack") {
+      return;
+    }
+    const options = this.bleControlAckOptions || {};
+    if (options.cmdId && payload.cmdId !== options.cmdId) {
+      return;
+    }
+    if (options.commandType && payload.commandType && payload.commandType !== options.commandType) {
+      return;
+    }
+    const resolve = this.bleControlAckResolve;
+    const reject = this.bleControlAckReject;
+    const failed = isBleAckFailure(payload);
+    const succeeded = isBleAckSuccess(payload);
+    if (!failed && !succeeded) {
+      this.setData({ commandDialogText: getBleAckMessage(payload, "设备正在执行命令，等待最终结果"), commandDialogProgress: Math.max(this.data.commandDialogProgress || 85, 90) });
+      return;
+    }
+    if (this.bleControlAckTimer) {
+      clearTimeout(this.bleControlAckTimer);
+      this.bleControlAckTimer = null;
+    }
+    this.bleControlAckResolve = null;
+    this.bleControlAckReject = null;
+    this.bleControlAckOptions = null;
+    if (failed) {
+      if (reject) {
+        reject(new Error(getBleAckMessage(payload, "设备执行失败")));
+      }
+      return;
+    }
+    if (resolve) {
+      resolve(payload);
+    }
+  },
+
+  closeBleControlConnection(deviceId) {
+    this.cleanupBleControlNotify();
+    if (!deviceId || !wx.closeBLEConnection) {
+      return;
+    }
+    try {
+      wx.closeBLEConnection({ deviceId });
+    } catch (error) {}
   },
 
   scheduleCommandStatusPoll(commandId, options) {
@@ -975,9 +1809,10 @@ Page({
         return;
       }
       const nextLeft = Math.max(0, safeDuration - this.commandCountdownElapsed);
+      const timeoutLeft = Math.max(0, timeoutTotal - this.commandCountdownElapsed);
       const commandCountdownText = nextLeft > 0
         ? `浇水倒计时，剩余 ${nextLeft} 秒`
-        : "浇水时间已到，等待设备完成确认...";
+        : `浇水时间已到，正在查询执行结果（${timeoutLeft} 秒超时）`;
       this.setData({ commandCountdownLeft: nextLeft, commandCountdownText });
     }, 1000);
   },

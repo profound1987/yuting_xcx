@@ -37,10 +37,14 @@
       <view class="scan-button inline" bindtap="scanDeviceCode">扫码</view>
     </view>
     <view class="form-row">
+      <view class="form-label">设备 PIN</view>
+      <input class="form-input" type="number" maxlength="8" placeholder="设备标签上的 4-8 位 PIN" value="{{devicePin}}" bindinput="onDevicePinInput" />
+    </view>
+    <view class="form-row">
       <view class="form-label">设备名称</view>
       <input class="form-input" placeholder="例如 阳台浇水" value="{{deviceName}}" bindinput="onDeviceNameInput" />
     </view>
-    <view class="device-hint">设备类型会根据设备号自动识别，无需手动选择。</view>
+    <view class="device-hint">设备类型会根据设备号自动识别；PIN 是近场持有证明，没有 PIN 不能配网。</view>
     <view class="primary-button" bindtap="configureDevice">配置设备</view>
   </view>
 
@@ -66,10 +70,11 @@
         <view class="device-name">{{item.name}}</view>
         <view class="device-meta">{{item.typeLabel}} · {{item.deviceNo}}</view>
       </view>
-      <view class="status-pill {{item.online === false ? 'offline' : ''}}">{{item.status}}</view>
+      <view class="status-pill {{item.online === false ? 'offline' : ''}} {{item.networkState === 'not_provisioned' || item.provisionState === 'not_provisioned' ? 'unprovisioned' : ''}}">{{item.status}}</view>
     </view>
     <view class="device-actions">
       <view class="text-button" data-id="{{item.id}}" bindtap="openDevice">管理</view>
+      <view wx:if="{{item.networkState === 'not_provisioned' || item.provisionState === 'not_provisioned' || item.canConfigure}}" class="text-button configure" data-id="{{item.id}}" bindtap="configureStoredDevice">配网</view>
       <view class="text-button danger" data-id="{{item.id}}" bindtap="deleteDevice">解绑</view>
     </view>
   </view>

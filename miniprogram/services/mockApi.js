@@ -8,6 +8,7 @@ const BIND_FAILURE_WARNING_THRESHOLD = 3;
 const BIND_FAILURE_LOCK_THRESHOLD = 10;
 const BIND_FAILURE_LOCK_HOURS = 24;
 const BIND_FAILURE_WINDOW_MS = BIND_FAILURE_LOCK_HOURS * 60 * 60 * 1000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 90000;
 
 const DEVICE_TYPES = [
   { label: "智能浇水设备", value: "watering", code: "AW" },
@@ -42,6 +43,17 @@ function crc32(text) {
 
 function getCheckCode(body) {
   return crc32(`${body}|${DEVICE_CODE_SALT}`).slice(4);
+}
+
+function isRecordProvisioned(record) {
+  return (record.provisionState || "provisioned") === "provisioned";
+}
+
+function getNetworkState(record) {
+  if (!isRecordProvisioned(record)) {
+    return "not_provisioned";
+  }
+  return record.online ? "online" : "offline";
 }
 
 function clone(value) {
@@ -167,6 +179,9 @@ function ensureRecordShape(record) {
   if (!record) {
     return record;
   }
+  if (!record.provisionState) {
+    record.provisionState = "provisioned";
+  }
   if (!record.capabilities) {
     record.capabilities = defaultCapabilitiesForType(record.type);
   }
@@ -221,6 +236,7 @@ function createMockRecord(typeInfo, serialNumber) {
     name: typeInfo.label,
     status: "registered",
     bindStatus,
+    provisionState: "provisioned",
     ownerPhone,
     mockScenario: scenario,
     online,
@@ -405,6 +421,9 @@ function getRecord(deviceNo) {
 }
 
 function getDisplayStatus(record) {
+  if (!isRecordProvisioned(record)) {
+    return "未入网";
+  }
   if (record.displayStatus === "浇水中") {
     return "浇水中";
   }
@@ -422,8 +441,13 @@ function createDevicePayload(record, name) {
     type: record.type,
     typeLabel: record.typeLabel,
     status: getDisplayStatus(record),
-    online: record.online,
+    online: record.online && isRecordProvisioned(record),
     bindStatus: record.bindStatus,
+    provisionState: record.provisionState || "provisioned",
+    provisioned: isRecordProvisioned(record),
+    networkState: getNetworkState(record),
+    canConfigure: record.bindStatus === "bound" && !isRecordProvisioned(record),
+    canBleControl: record.bindStatus === "bound" && (!isRecordProvisioned(record) || !record.online),
     ownerPhone: record.ownerPhone,
     mockScenario: record.mockScenario,
     config: clone(record.config || {}),
@@ -437,13 +461,13 @@ function createDevicePayload(record, name) {
     capabilities: clone(record.capabilities || defaultCapabilitiesForType(record.type)),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
-    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
-    heartbeatTimeoutMs: (record.heartbeatIntervalMs || 30000) * 2,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS,
+    heartbeatTimeoutMs: (record.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS) * 2,
     lastHeartbeatAt: record.lastHeartbeatAt || null,
     lastBootAt: record.lastBootAt || null,
     lastSeenAt: record.lastSeenAt || (record.online ? record.updatedAt : null),
     telemetry: clone(record.telemetry || {}),
-    syncState: record.online ? "synced" : "offline",
+    syncState: isRecordProvisioned(record) ? (record.online ? "synced" : "offline") : "not_provisioned",
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -523,7 +547,7 @@ function prepareConfigure(data) {
     return failure("USER_REQUIRED", "请先登录");
   }
 
-  if (record.bindStatus === "bound" && record.ownerPhone === phone) {
+  if (record.bindStatus === "bound" && record.ownerPhone === phone && isRecordProvisioned(record)) {
     return failure("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", { device: createDevicePayload(record, record.name) });
   }
 
@@ -553,13 +577,15 @@ function prepareConfigure(data) {
     type: record.type,
     typeLabel: record.typeLabel,
     bindStatus: record.bindStatus,
+    provisionState: record.provisionState || "provisioned",
+    pinRequired: false,
     bleNamePrefix: "ytsh-",
     needBleProvision: true,
     provisionSessionId,
     expiresAt: sessions[provisionSessionId].expiresAt,
     pollIntervalMs: 500,
     timeoutMs: 10000,
-    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS,
     wifiStatusTimeoutMs: 60000,
   });
 }
@@ -661,6 +687,9 @@ function bindDevice(data) {
 
   const now = Date.now();
   record.bindStatus = "bound";
+  record.provisionState = "provisioned";
+  record.online = true;
+  record.displayStatus = "在线";
   record.ownerPhone = phone;
   record.ownerUserId = user.id;
   record.name = deviceName || record.name;
@@ -673,6 +702,54 @@ function bindDevice(data) {
   session.updatedAt = now;
   sessions[session.id] = session;
   setProvisionSessions(sessions);
+
+  return success({
+    user,
+    device: createDevicePayload(record, record.name),
+  });
+}
+
+function addUnprovisionedDevice(data) {
+  const phone = data.phone || "";
+  const deviceName = (data.deviceName || "").trim();
+  const inputDeviceNo = data.deviceNo || "";
+  const normalizedDeviceNo = normalizeDeviceNo(inputDeviceNo);
+  const locked = bindLockedFailure(phone, inputDeviceNo, normalizedDeviceNo);
+  if (locked) {
+    return locked;
+  }
+
+  const { registry, record } = getRecord(data.deviceNo);
+  if (!record || record.status !== "registered") {
+    return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "DEVICE_NOT_BINDABLE", "设备号不正确", "add_unprovisioned_not_registered");
+  }
+
+  const user = ensureUser(phone);
+  if (!user) {
+    return bindFailure(phone, inputDeviceNo, normalizedDeviceNo, "USER_REQUIRED", "请先登录", "user_required");
+  }
+
+  if (record.bindStatus === "bound" && record.ownerPhone && record.ownerPhone !== phone) {
+    return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定", "bound_by_other");
+  }
+  if (record.bindStatus === "bound" && record.mockScenario === "sale-bound-online") {
+    return bindFailure(phone, inputDeviceNo, record.deviceNo, "DEVICE_ALREADY_BOUND", "设备已被绑定", "bound_by_other");
+  }
+  if (record.bindStatus === "bound" && record.ownerPhone === phone && isRecordProvisioned(record)) {
+    return failure("DEVICE_ALREADY_OWNED", "该设备已经是你的设备", { device: createDevicePayload(record, record.name) });
+  }
+
+  const now = Date.now();
+  record.bindStatus = "bound";
+  record.provisionState = "not_provisioned";
+  record.online = false;
+  record.displayStatus = "未入网";
+  record.ownerPhone = phone;
+  record.ownerUserId = user.id;
+  record.name = deviceName || record.name;
+  record.updatedAt = now;
+  registry[record.deviceNo] = record;
+  setRegistry(registry);
 
   return success({
     user,
@@ -741,6 +818,7 @@ function unbindDevice(data) {
 
   const now = Date.now();
   record.bindStatus = "unbound";
+  record.provisionState = "provisioned";
   record.ownerPhone = null;
   record.ownerUserId = null;
   record.name = record.typeLabel;
@@ -769,7 +847,13 @@ function getStatus(data) {
     deviceNo: record.deviceNo,
     deviceType: record.type,
     status: getDisplayStatus(record),
-    online: record.online,
+    online: record.online && isRecordProvisioned(record),
+    bindStatus: record.bindStatus,
+    provisionState: record.provisionState || "provisioned",
+    provisioned: isRecordProvisioned(record),
+    networkState: getNetworkState(record),
+    canConfigure: record.bindStatus === "bound" && !isRecordProvisioned(record),
+    canBleControl: record.bindStatus === "bound" && (!isRecordProvisioned(record) || !record.online),
     config: clone(record.config || {}),
     configState: record.configState || "unconfigured",
     desiredConfig: record.desiredConfig ? clone(record.desiredConfig) : null,
@@ -782,8 +866,8 @@ function getStatus(data) {
     runtimeState: clone((record.telemetry && record.telemetry.state) || {}),
     lastWateringAt: record.lastWateringAt || "--",
     lastSyncedAt: record.lastSyncedAt,
-    heartbeatIntervalMs: record.heartbeatIntervalMs || 30000,
-    heartbeatTimeoutMs: (record.heartbeatIntervalMs || 30000) * 2,
+    heartbeatIntervalMs: record.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS,
+    heartbeatTimeoutMs: (record.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS) * 2,
     lastHeartbeatAt: record.lastHeartbeatAt || null,
     lastBootAt: record.lastBootAt || null,
     lastSeenAt: record.lastSeenAt || (record.online ? record.updatedAt : null),
@@ -812,8 +896,8 @@ function saveWateringConfig(data) {
     return failure("DEVICE_NOT_FOUND", "设备不存在");
   }
   ensureRecordShape(record);
-  if (!record.online) {
-    return failure("DEVICE_OFFLINE", "设备离线，无法保存");
+  if (!record.online || !isRecordProvisioned(record)) {
+    return failure(isRecordProvisioned(record) ? "DEVICE_OFFLINE" : "DEVICE_NOT_PROVISIONED", isRecordProvisioned(record) ? "设备离线，无法保存" : "设备未入网，请先配网");
   }
 
   const now = Date.now();
@@ -876,8 +960,8 @@ function startManualWatering(data) {
   if (!isMockFeatureSupported(record, "manualWatering")) {
     return failure("FEATURE_UNSUPPORTED", "设备不支持手动浇水");
   }
-  if (!record.online) {
-    return failure("DEVICE_OFFLINE", "设备离线，无法下发");
+  if (!record.online || !isRecordProvisioned(record)) {
+    return failure(isRecordProvisioned(record) ? "DEVICE_OFFLINE" : "DEVICE_NOT_PROVISIONED", isRecordProvisioned(record) ? "设备离线，无法下发" : "设备未入网，请先配网");
   }
 
   const now = Date.now();
@@ -915,8 +999,8 @@ function stopManualWatering(data) {
   if (!isMockFeatureSupported(record, "manualWatering")) {
     return failure("FEATURE_UNSUPPORTED", "设备不支持手动浇水");
   }
-  if (!record.online) {
-    return failure("DEVICE_OFFLINE", "设备离线，无法下发");
+  if (!record.online || !isRecordProvisioned(record)) {
+    return failure(isRecordProvisioned(record) ? "DEVICE_OFFLINE" : "DEVICE_NOT_PROVISIONED", isRecordProvisioned(record) ? "设备离线，无法下发" : "设备未入网，请先配网");
   }
 
   const now = Date.now();
@@ -976,6 +1060,9 @@ function mockCall(type, data) {
   }
   if (type === "device.checkProvisionStatus") {
     return checkProvisionStatus(data || {});
+  }
+  if (type === "device.addUnprovisioned") {
+    return addUnprovisionedDevice(data || {});
   }
   if (type === "device.bind") {
     return bindDevice(data || {});

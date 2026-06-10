@@ -1,6 +1,8 @@
 const SESSION_KEY = "yuntingSession";
 const DEVICES_KEY_PREFIX = "yuntingDevices";
+const BLE_PIN_KEY_PREFIX = "yuntingBlePin";
 const { callApi, apiConfig, getLastHttpRequestUrl } = require("../../services/apiClient");
+const { BLE_PIN_SUITE, BLE_PROTO, createBleSecureFrame } = require("../../utils/blePinCrypto");
 
 const DEVICE_TYPES = [
   { label: "智能浇水设备", value: "watering", code: "AW" },
@@ -11,6 +13,7 @@ const DEVICE_TYPES = [
 ];
 
 const DEVICE_NO_PATTERN = /^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$/;
+const DEVICE_PIN_PATTERN = /^\d{4,8}$/;
 const DEVICE_CODE_SALT = "YUNTING-ZHIJIA-DEVICE-CODE-V1";
 const CRC32_TABLE = createCrc32Table();
 const DEVICE_NO_ERROR = "设备号不正确";
@@ -22,7 +25,7 @@ const PROVISION_NOTIFY_UUID = "0000FFF2-0000-1000-8000-00805F9B34FB";
 const DEFAULT_PROVISION_POLL_INTERVAL_MS = 2000;
 const DEFAULT_PROVISION_TIMEOUT_MS = 120000;
 const DEFAULT_CLOUD_ONLINE_TIMEOUT_MS = 45000;
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 30000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 90000;
 const DEFAULT_WIFI_STATUS_TIMEOUT_MS = 60000;
 const DEFAULT_DEVICE_VERIFY_TIMEOUT_MS = 3000;
 const BLE_DEVICE_TTL_MS = 8000;
@@ -62,6 +65,38 @@ function normalizeDeviceNo(value) {
 function extractDeviceNo(text) {
   const matched = normalizeDeviceNo(text).match(/YT-[A-Z]{2}-[0-9A-F]{5}-[0-9A-F]{4}/);
   return matched ? matched[0] : "";
+}
+
+function extractDevicePin(text) {
+  const raw = String(text || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const pin = normalizePin(parsed.pin || parsed.devicePin || parsed.device_pin);
+    if (pin) {
+      return pin;
+    }
+  } catch (error) {}
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch (error) {}
+  const queryMatch = decoded.match(/(?:^|[?&#])(?:pin|devicePin|device_pin)=([0-9]{4,8})(?:$|[&#])/i);
+  if (queryMatch) {
+    return queryMatch[1];
+  }
+  const textMatch = decoded.match(/(?:^|\b)(?:PIN|pin|设备PIN|设备 Pin)\s*[:=：]\s*([0-9]{4,8})(?:\b|$)/);
+  return textMatch ? textMatch[1] : "";
+}
+
+function normalizePin(value) {
+  return String(value || "").trim();
+}
+
+function isValidPin(value) {
+  return DEVICE_PIN_PATTERN.test(normalizePin(value));
 }
 
 function getDeviceTypeByCode(code) {
@@ -108,6 +143,17 @@ function setStoredDevices(phone, devices) {
   wx.setStorageSync(getDevicesKey(phone), devices);
 }
 
+function getBlePinKey(deviceNo) {
+  return `${BLE_PIN_KEY_PREFIX}_${deviceNo || "unknown"}`;
+}
+
+function setCachedBlePin(deviceNo, pin) {
+  const normalized = normalizePin(pin);
+  if (deviceNo && isValidPin(normalized)) {
+    wx.setStorageSync(getBlePinKey(deviceNo), normalized);
+  }
+}
+
 function createWateringConfig() {
   return {};
 }
@@ -116,6 +162,7 @@ function createDeviceFromRemote(parsed, deviceName, remoteDevice) {
   const now = Date.now();
   const device = remoteDevice || {};
   const type = device.type || parsed.deviceType.value;
+  const provisioned = device.provisioned !== false && device.provisionState !== "not_provisioned" && device.networkState !== "not_provisioned";
   return {
     id: device.id || `device_${now}`,
     deviceNo: parsed.deviceNo,
@@ -125,9 +172,14 @@ function createDeviceFromRemote(parsed, deviceName, remoteDevice) {
     ownerPhone: device.ownerPhone || "",
     type,
     typeLabel: device.typeLabel || getDeviceTypeLabel(type),
-    status: device.status || "在线",
-    online: device.online !== false,
+    status: device.status || (provisioned ? "在线" : "未入网"),
+    online: provisioned && device.online !== false,
     bindStatus: device.bindStatus || "bound",
+    provisionState: device.provisionState || (provisioned ? "provisioned" : "not_provisioned"),
+    provisioned,
+    networkState: device.networkState || (provisioned ? (device.online === false ? "offline" : "online") : "not_provisioned"),
+    canConfigure: !!device.canConfigure,
+    canBleControl: !!device.canBleControl,
     mockScenario: device.mockScenario || "",
     createdAt: device.createdAt || now,
     updatedAt: device.updatedAt || now,
@@ -238,6 +290,8 @@ function getProvisionErrorMessage(code, fallback) {
     DEVICE_AUTH_FAILED: "设备认证失败，请联系售后",
     DEVICE_REPLAY_DETECTED: "设备认证失败，请联系售后",
     DEVICE_KEY_NOT_FOUND: "设备未注册或暂不可用",
+    DEVICE_PIN_INVALID: "设备 PIN 不正确，请检查设备标签后重试",
+    DEVICE_PIN_LOCKED: "设备 PIN 错误次数过多，请稍后再试",
     PROVISION_TIMEOUT: "配置超时，请重新配置",
   };
   return map[normalizedCode] || fallback || "配置失败，请稍后重试";
@@ -315,7 +369,10 @@ function getBleWifiStatusError(payload) {
 
 function getBleWifiStatusType(payload) {
   const type = String((payload && payload.type) || "");
-  return type === "wifiStatus" || type === "wifi.status" || type === "provisionWifi.status";
+  return type === "wifiStatus"
+    || type === "wifi.status"
+    || type === "provisionWifi.status"
+    || type === "provision.wifi.status";
 }
 
 function getBleVerifyStatusType(payload) {
@@ -456,6 +513,7 @@ Page({
   data: {
     phone: "",
     deviceNo: "",
+    devicePin: "",
     deviceName: "",
     parsedDevice: { valid: false },
     prepareData: null,
@@ -490,10 +548,12 @@ Page({
     }
 
     const deviceNo = normalizeDeviceNo(decodeURIComponent(options.deviceNo || ""));
+    const devicePin = normalizePin(decodeURIComponent(options.pin || options.devicePin || ""));
     const deviceName = decodeURIComponent(options.deviceName || "").trim();
     this.setData({
       phone: session.phone,
       deviceNo,
+      devicePin,
       deviceName,
       sessionDevBypass: !!session.devBypass,
     }, this.refreshParsedDevice);
@@ -506,6 +566,10 @@ Page({
 
   onDeviceNoInput(e) {
     this.setData({ deviceNo: normalizeDeviceNo(e.detail.value) }, this.refreshParsedDevice);
+  },
+
+  onDevicePinInput(e) {
+    this.setData({ devicePin: normalizePin(e.detail.value) });
   },
 
   onDeviceNameInput(e) {
@@ -569,8 +633,9 @@ Page({
           wx.showToast({ title: parsed.message, icon: "none" });
           return;
         }
-        this.setData({ deviceNo: parsed.deviceNo, parsedDevice: parsed });
-        wx.showToast({ title: "已读取设备号" });
+        const devicePin = extractDevicePin(res.result);
+        this.setData({ deviceNo: parsed.deviceNo, devicePin, parsedDevice: parsed });
+        wx.showToast({ title: devicePin ? "已读取设备号和 PIN" : "已读取设备号" });
       },
     });
   },
@@ -586,13 +651,21 @@ Page({
       return;
     }
 
+    if (!isValidPin(this.data.devicePin)) {
+      const message = "请输入设备标签上的 4-8 位 PIN";
+      this.setStatus(message, "error");
+      wx.showToast({ title: message, icon: "none" });
+      return;
+    }
+
     if (!this.data.deviceName) {
       wx.showToast({ title: "请输入设备名称", icon: "none" });
       return;
     }
 
     const localDevices = getStoredDevices(this.data.phone);
-    if (localDevices.some((item) => item.deviceNo === parsed.deviceNo)) {
+    const existingDevice = localDevices.find((item) => item.deviceNo === parsed.deviceNo);
+    if (existingDevice && existingDevice.provisionState !== "not_provisioned" && existingDevice.networkState !== "not_provisioned" && existingDevice.provisioned !== false) {
       this.setStatus(DEVICE_ALREADY_OWNED_ERROR, "info");
       wx.showModal({ title: "设备已存在", content: DEVICE_ALREADY_OWNED_ERROR, showCancel: false });
       return;
@@ -917,7 +990,27 @@ Page({
 
   closeWifiDialog() {
     this.wifiProvisionWriteInProgress = false;
-    this.setData({ showWifiDialog: false, sendingWifi: false, configuring: false });
+    this.cleanupBleStatusNotify();
+    this.closeCurrentBleConnection();
+    this.setData({
+      showWifiDialog: false,
+      sendingWifi: false,
+      configuring: false,
+      selectedBleDevice: null,
+    });
+  },
+
+  resetBleProvisionConnection() {
+    this.cleanupBleStatusNotify();
+    this.closeCurrentBleConnection();
+    this.stopBleDiscovery();
+    this.wifiProvisionWriteInProgress = false;
+    this.setData({
+      sendingWifi: false,
+      selectedBleDevice: null,
+      showBleDeviceDialog: false,
+      showWifiDialog: false,
+    });
   },
 
   connectBleDevice(device) {
@@ -955,15 +1048,18 @@ Page({
   },
 
   sendDeviceNoForVerify(deviceId) {
-    const payload = { type: "verifyDeviceNo", deviceNo: this.data.parsedDevice.deviceNo, ts: Date.now() };
+    const payload = {
+      type: "ble.hello",
+      proto: BLE_PROTO,
+      suite: BLE_PIN_SUITE,
+      deviceNo: this.data.parsedDevice.deviceNo,
+      ts: Date.now(),
+    };
     return this.writeBlePayload(deviceId, payload)
-      .then(() => this.waitForBleDeviceVerified(DEFAULT_DEVICE_VERIFY_TIMEOUT_MS))
       .then(() => this.showWifiStep())
-      .catch((error) => {
+      .catch(() => {
         this.setStep("scan", "error");
-        const message = error && error.provisionMessage
-          ? error.provisionMessage
-          : getProvisionErrorMessage(error && error.code, getProvisionErrorMessage("DEVICE_VERIFY_FAILED"));
+        const message = getProvisionErrorMessage("DEVICE_VERIFY_FAILED");
         this.setStatus(message, "error");
         wx.showModal({ title: "设备校验失败", content: message, showCancel: false });
       });
@@ -1030,6 +1126,7 @@ Page({
     if (!text) {
       return;
     }
+    console.log("[BLE] notify chunk", { characteristicId: res.characteristicId, text });
     this.bleStatusTextBuffer = `${this.bleStatusTextBuffer || ""}${text}`;
     const parts = this.bleStatusTextBuffer.split("\n");
     this.bleStatusTextBuffer = parts.pop() || "";
@@ -1051,8 +1148,10 @@ Page({
     try {
       payload = JSON.parse(text);
     } catch (error) {
+      console.warn("[BLE] notify JSON parse failed", text);
       return;
     }
+    console.log("[BLE] notify payload", payload);
 
     if (getBleVerifyStatusType(payload)) {
       this.handleBleVerifyStatusPayload(payload);
@@ -1060,10 +1159,12 @@ Page({
     }
 
     if (!getBleWifiStatusType(payload)) {
+      console.log("[BLE] ignore notify payload type", payload.type);
       return;
     }
     this.lastBleWifiStatusPayload = payload;
     const status = normalizeBleWifiStatus(payload);
+    console.log("[BLE] Wi-Fi status payload", { status, payload });
     if (status === "progress") {
       this.setStatus(getBleWifiStatusMessage(payload), "info");
       return;
@@ -1250,7 +1351,7 @@ Page({
       return;
     }
     const payload = {
-      type: "provisionWifi",
+      type: "provision.wifi",
       deviceNo: this.data.parsedDevice.deviceNo,
       provisionSessionId: prepareData.provisionSessionId,
       apiUrl: `${apiConfig.baseUrl}${apiConfig.httpPath || "/api"}`,
@@ -1281,7 +1382,13 @@ Page({
     }
 
     try {
-      await this.writeBlePayload(device.deviceId, payload);
+      const frame = createBleSecureFrame({
+        deviceNo: this.data.parsedDevice.deviceNo,
+        pin: this.data.devicePin,
+        msgType: "provision.wifi",
+        payload,
+      });
+      await this.writeBlePayload(device.deviceId, frame);
       this.setData({ showWifiDialog: false });
       this.setStatus("Wi‑Fi 信息已发送，正在等待设备返回连接结果...", "info");
       await this.waitForBleWifiConnected(getWifiStatusTimeoutMs(prepareData));
@@ -1289,14 +1396,13 @@ Page({
       this.setStatus("设备已连接 Wi‑Fi，正在等待云端认证...", "info");
       this.waitCloudOnline();
     } catch (error) {
-      this.wifiProvisionWriteInProgress = false;
-      this.setData({ sendingWifi: false });
+      this.resetBleProvisionConnection();
       this.setStep("wifi", "error");
       const message = error && error.provisionMessage
         ? error.provisionMessage
         : getProvisionErrorMessage(error && error.code, getProvisionErrorMessage("WIFI_CONNECT_TIMEOUT"));
       this.setStatus(message, "error");
-      wx.showModal({ title: "配网失败", content: message, showCancel: false });
+      this.promptAddUnprovisioned(message);
     }
   },
 
@@ -1366,8 +1472,9 @@ Page({
       if (lastResp && !lastResp.success) {
         const code = lastResp.code || "DEVICE_PROVISION_TIMEOUT";
         this.setStep("cloud", "error");
-        this.setStatus(getProvisionErrorMessage(code, lastResp.message), "error");
-        wx.showModal({ title: "设备未上线", content: getProvisionErrorMessage(code, lastResp.message), showCancel: false });
+        const message = getProvisionErrorMessage(code, lastResp.message);
+        this.setStatus(message, "error");
+        this.promptAddUnprovisioned(message);
         return;
       }
 
@@ -1380,7 +1487,58 @@ Page({
     this.setStep("cloud", "error");
     const message = getProvisionErrorMessage("DEVICE_PROVISION_TIMEOUT", lastResp && lastResp.message);
     this.setStatus(message, "error");
-    wx.showModal({ title: "设备未上线", content: message, showCancel: false });
+    this.promptAddUnprovisioned(message);
+  },
+
+  promptAddUnprovisioned(message) {
+    if (!this.data.selectedBleDevice && !this.data.bleDevices.length) {
+      wx.showModal({ title: "配网失败", content: message, showCancel: false });
+      return;
+    }
+    wx.showModal({
+      title: "配网失败",
+      content: `${message}\n\n是否先加入我的设备？设备会显示为“未入网”，下次可从设备列表继续配网。`,
+      confirmText: "先加入",
+      cancelText: "暂不加入",
+      success: (res) => {
+        if (res.confirm) {
+          this.addUnprovisionedDevice();
+        }
+      },
+    });
+  },
+
+  async addUnprovisionedDevice() {
+    wx.showLoading({ title: "加入中..." });
+    let resp = null;
+    try {
+      resp = await callApi("device.addUnprovisioned", {
+        phone: this.data.phone,
+        deviceNo: this.data.parsedDevice.deviceNo,
+        deviceName: this.data.deviceName,
+      });
+    } catch (error) {
+      resp = null;
+    }
+    wx.hideLoading();
+    if (!resp || !resp.success || !resp.data || !resp.data.device) {
+      wx.showModal({ title: "加入失败", content: (resp && resp.message) || "无法加入设备，请稍后重试", showCancel: false });
+      return;
+    }
+    const devices = getStoredDevices(this.data.phone).filter((item) => item.deviceNo !== this.data.parsedDevice.deviceNo);
+    const device = createDeviceFromRemote(this.data.parsedDevice, this.data.deviceName, resp.data.device);
+    device.ownerPhone = this.data.phone;
+    device.blePin = this.data.devicePin;
+    setCachedBlePin(device.deviceNo, device.blePin);
+    devices.unshift(device);
+    setStoredDevices(this.data.phone, devices);
+    this.setStatus("已加入我的设备，状态为未入网。", "success");
+    wx.showModal({
+      title: "已加入我的设备",
+      content: "设备状态为未入网。下次可在设备列表点击“配网”继续配置，离线或未入网时也会优先尝试蓝牙控制。",
+      showCancel: false,
+      success: () => wx.navigateBack({ delta: 1 }),
+    });
   },
 
   async finalBind() {
@@ -1412,6 +1570,8 @@ Page({
     const devices = getStoredDevices(this.data.phone).filter((item) => item.deviceNo !== this.data.parsedDevice.deviceNo);
     const device = createDeviceFromRemote(this.data.parsedDevice, this.data.deviceName, bindResp.data.device);
     device.ownerPhone = this.data.phone;
+    device.blePin = this.data.devicePin;
+    setCachedBlePin(device.deviceNo, device.blePin);
     devices.unshift(device);
     setStoredDevices(this.data.phone, devices);
 

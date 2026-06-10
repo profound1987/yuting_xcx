@@ -161,6 +161,7 @@
 | 设备 | `device.prepareConfigure` | 配置设备前检查设备号和绑定归属，并创建有 TTL 的配网会话 |
 | 设备 | `device.checkProvisionStatus` | 小程序配网后轮询设备是否已通过云端认证上线 |
 | 设备 | `device.bind` | 配网会话为 `ready_to_bind` 后完成最终绑定 |
+| 设备 | `device.addUnprovisioned` | BLE 已扫描到设备但配网失败时，先加入我的设备并标记为 `not_provisioned/未入网` |
 | 设备 | `device.list` | 查询当前用户设备列表 |
 | 设备 | `device.get` | 查询设备详情 |
 | 设备 | `device.getStatus` | 查询单台设备实时/缓存状态 |
@@ -392,17 +393,18 @@
 - 设备号不能为空，并符合设备号格式。
 - 设备类型由设备号类型码自动推导，不由用户手动选择。
 - 用户需要输入设备名称；如果为空，默认使用设备类型名称。
-- 手机端扫码或输入设备号后，先调用 `device.prepareConfigure` 做归属检查。
-- 云端检查设备是否已生产、已注册、状态允许配置。
+- 手机端扫码或输入设备号后，要求用户输入设备标签或二维码中的 4-8 位 PIN；PIN 只保留在手机本地用于 BLE 加密，不发送给云端。
+- 小程序先调用 `device.prepareConfigure` 做设备号、生产台账和绑定归属检查；云端不再校验 PIN。
 - 云端确认设备已经被其他用户绑定时，向手机端返回 `DEVICE_ALREADY_BOUND`，提示“设备已被绑定，请联系管理员解绑”。
 - 云端确认设备已经属于当前用户时，返回 `DEVICE_ALREADY_OWNED`，提示“该设备已经是你的设备，可在设备管理中查看”。
 - 云端确认设备未绑定后，创建带 TTL 的 `provisionSessionId` 并返回给小程序。
 - 设备进入配网模式后广播以 `ytsh-` 开头的蓝牙名称，小程序只展示这类设备。
-- 小程序连接 BLE 设备后，把设备号发送给设备验证，避免用户把 A 设备号配置到 B 设备。
-- 设备号验证通过后，小程序确认手机当前 Wi-Fi，要求用户输入 Wi-Fi 密码，并通过 BLE 下发 SSID、密码、设备号和 `provisionSessionId`。
+- 小程序连接 BLE 设备后，通过 `YTS-BLE/1` 用设备号、PIN 和固定 BLE salt 派生下行 AES-128-CCM key，避免用户把 A 设备号配置到 B 设备，也避免 PIN 在 BLE 明文中被抓包复用。
+- 设备成功解密首个 AES-CCM 下行加密帧后，表示设备号和 PIN 校验通过；设备 Notify 本期为明文 JSON 状态，不需要上行 nonce。小程序确认手机当前 Wi-Fi，要求用户输入 Wi-Fi 密码，并在加密 BLE 帧内下发 SSID、密码、设备号和 `provisionSessionId`。
 - 设备连接 Wi-Fi 后主动连接云端服务器并用 `device.secureMessage` 上报 `provision.result`。
 - 云端完成 AES-128-CCM tag 校验、解密和 nonce/seq 防重放后，把配网会话标记为 `ready_to_bind`。
-- 小程序配网后调用 `device.checkProvisionStatus` 轮询，如果超时仍未上线，提示“设备未上线，请检查网络是否正常”。
+- 小程序配网后调用 `device.checkProvisionStatus` 轮询，如果超时仍未上线，提示“设备未上线，请检查网络是否正常”。如果此前已经扫描或连接到目标 BLE 设备，可弹窗询问是否先加入“我的设备”；确认后调用 `device.addUnprovisioned`，设备状态为 `not_provisioned/未入网`，不是在线或离线，后续显示“配网”按钮。
+- 离线或未入网设备的控制通道应优先尝试 BLE 兜底，控制弹窗按“扫描蓝牙设备、将数据发送给设备、最终结果”三步显示。BLE 控制不跑 MQTT，也不使用 Topic；它通过 `YTS-BLE/1` 加密 GATT 帧发送 `local.command`，业务语义复用云端 `commandType/params/ack`。
 - 只有 `device.checkProvisionStatus` 返回 `DEVICE_READY_TO_BIND` 后，小程序才调用 `device.bind` 完成最终绑定。
 - `device.bind` 必须再次校验设备未被重复绑定、配网会话属于当前用户和设备、会话未过期、状态为 `ready_to_bind`，不能只因为小程序刚刚查询到在线就绑定成功。
 - 绑定成功后写入 `devices.ownerUserId`、用户自定义设备名称和绑定审计记录。智能浇水设备首次绑定不自动生成真实业务配置，配置状态保持 `unconfigured`，直到用户显式保存并收到设备 ACK。
