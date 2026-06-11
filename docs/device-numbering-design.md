@@ -263,6 +263,8 @@ console.log(`${body}-${check4}`); // YT-AW-00001-4BF5
 https://iot.yunting.example/bind?deviceNo=YT-AW-00001-4BF5&pin=123456
 ```
 
+二维码严禁包含设备云端通信 AES Key，例如 `deviceKey`、`aesKeyHex` 或任何可还原设备 AES Key 的字段。AES Key 只允许存在于生产台账、设备安全烧录流程和服务器受控导入流程中，不得出现在二维码、铭牌、小程序缓存、用户可见页面或普通日志里。
+
 手机端扫码后应从扫描结果中提取第一个匹配以下格式的设备号：
 
 ```text
@@ -495,6 +497,54 @@ Mock 模式会在本地模拟上述流程：在线设备保存成功后，参数
 ```
 
 其中设备号用于识别设备和进入配置流程，不是安全凭证。PIN 用于证明用户近场持有设备，必须有 PIN 才能进入 BLE 配网；生产台账登记设备号、PIN 和设备云端通信 AES 密钥 `deviceKey`，设备安全存储器保存 PIN。PIN 不得通过 BLE 明文发送，正式 BLE 配网和本地控制的小程序下行必须通过 `YTS-BLE-PIN/1` 用固定 BLE salt 派生 AES-128-CCM key，并通过 `YTS-BLE/1` 加密传输；设备上行 Notify 本期使用明文 JSON 状态，不携带敏感字段。用户实际持有设备的最终证明来自 BLE 近场配网，以及设备连接云端后使用 eFuse 16 字节 AES `deviceKey` 生成的 `YTS-SEC/1` AES-128-CCM 认证上报。二维码可以包含设备号和 PIN，但不应包含设备密钥。
+
+### 10.1 设备台账生成工具
+
+当前仓库提供 `tools/generate_devices_xlsx.py` 生成生产/测试台账 Excel：
+
+```powershell
+python .\tools\generate_devices_xlsx.py YT-AW 00100 50 -o .\tools\generated_devices
+```
+
+参数说明：
+
+| 参数 | 示例 | 说明 |
+| --- | --- | --- |
+| `device_type` | `YT-AW` 或 `AW` | 设备类型码；当前支持 `AW`、`ES`、`LC`、`SP`、`GW` |
+| `start_serial` | `00100` | 起始流水号，必须是 5 位十六进制字符；`000100` 是非法输入 |
+| `count` | `50` | 生成设备数量 |
+| `-o/--output` | `.\tools\generated_devices` | 输出目录或 `.xlsx` 文件路径 |
+
+流水号按十六进制递增。例如 `00100` 的下一台是 `00101`，`001AF` 的下一台是 `001B0`。脚本默认输出文件名为首台完整设备号，例如 `YT-AW-00100-33D7.xlsx`。
+
+生成表字段：
+
+| 字段 | 示例 | 说明 |
+| --- | --- | --- |
+| `deviceid` | `YT-AW-00100-33D7` | 完整设备号，可用于二维码和设备台账 |
+| `pin` | `123456` | 随机 6 位 PIN，用于 BLE 近场持有证明 |
+| `aesKeyHex` | `001122...` | 随机 16 字节设备云端通信 AES Key，32 位大写十六进制，必须保密 |
+| `keyId` | `k1` | 设备密钥编号 |
+| `typeCode` | `AW` | 设备类型码 |
+| `serial` | `00100` | 5 位十六进制流水号 |
+
+`aesKeyHex` 只能用于设备安全烧录和服务器受控导入，不得打印到设备标签或二维码中。
+
+### 10.2 二维码生成工具
+
+当前仓库提供 `tools/generate_bind_qrcodes.py` 从台账 Excel 生成绑定/配置二维码：
+
+```powershell
+python .\tools\generate_bind_qrcodes.py .\tools\generated_devices\YT-AW-00100-33D7.xlsx -o .\tools\qrcodes
+```
+
+二维码脚本只读取 `deviceid`/`deviceNo` 和 `pin` 字段，并会重新校验设备号格式和 CRC32 短校验码。二维码内容当前为 URL 格式：
+
+```text
+ytsh://bind?v=1&deviceNo=YT-AW-00100-33D7&pin=123456
+```
+
+即使输入 Excel 包含 `aesKeyHex`，二维码脚本也不得把它写入二维码内容、二维码文件名或二维码清单。`qrcode_manifest.xlsx` 只应包含设备号、PIN、二维码内容和二维码图片路径，不能包含 `aesKeyHex`。
 
 ## 11. 当前小程序实现状态
 
