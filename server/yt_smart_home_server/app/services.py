@@ -170,7 +170,6 @@ def normalize_capabilities_for_storage(capabilities: dict[str, Any]) -> dict[str
 def default_watering_capabilities() -> dict[str, Any]:
     capabilities = {
         "schemaVersion": 1,
-        "model": "YT-AW-BASIC-SM",
         "hwVersion": "dev",
         "fwVersion": "dev",
         "components": {

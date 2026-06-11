@@ -713,7 +713,6 @@ nonce = direction(1字节) || bootRandom(8字节) || seq(4字节)
   },
   "capabilities": {
     "schemaVersion": 1,
-    "model": "YT-AW-BASIC-SM",
     "components": {
       "waterPump": { "present": true, "channels": 1 },
       "soilMoistureSensor": { "present": true, "valueType": "percent" },
@@ -775,7 +774,6 @@ nonce = direction(1字节) || bootRandom(8字节) || seq(4字节)
 | `network.mac` | string | 建议 | 设备 MAC 地址，用于售后排查 |
 | `capabilities` | object | 成功时必填 | 设备能力对象；用于小程序动态显示功能项和服务端校验配置，不应只是字符串数组 |
 | `capabilities.schemaVersion` | number | 是 | 能力描述 schema 版本，当前建议 `1` |
-| `capabilities.model` | string | 建议 | 设备型号或硬件版本标识，用于售后和模板匹配 |
 | `capabilities.components` | object | 是 | 设备硬件/基础组件，例如水泵、土壤湿度传感器、水位传感器、本地存储 |
 | `capabilities.features` | object | 是 | 产品功能开关和参数约束，例如手动浇水、定期浇水、按需浇水 |
 | `errors` | object[] | 否 | 设备侧错误列表；成功时为空数组或省略 |

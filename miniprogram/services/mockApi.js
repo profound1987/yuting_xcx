@@ -109,7 +109,6 @@ function createWateringConfig() {
 function createWateringCapabilities() {
   return {
     schemaVersion: 1,
-    model: "YT-AW-BASIC-SM",
     hwVersion: "mock",
     fwVersion: "mock",
     components: {

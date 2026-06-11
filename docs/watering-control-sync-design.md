@@ -172,7 +172,6 @@ placeholder：例如 1
 ```json
 {
   "schemaVersion": 1,
-  "model": "YT-AW-BASIC-SM",
   "hwVersion": "1.0",
   "fwVersion": "0.1.0",
   "components": {
@@ -612,7 +611,6 @@ POST /api type = device.getStatus
   "deviceType": "watering",
   "capabilities": {
     "schemaVersion": 1,
-    "model": "YT-AW-BASIC-SM",
     "components": {
       "waterPump": { "present": true, "channels": 1 },
       "soilMoistureSensor": { "present": true, "valueType": "percent" },
@@ -976,7 +974,6 @@ stateDiagram-v2
 ```text
 device_no TEXT PRIMARY KEY
 schema_version INTEGER
-model TEXT
 hw_version TEXT
 fw_version TEXT
 capabilities_json TEXT
