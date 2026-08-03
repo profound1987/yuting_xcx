@@ -1,8 +1,10 @@
 # 服务器部署 Runbook
 
-> 适用范围：云汀智家测试服务器上的 FastAPI 后端部署、重启、验证和回滚。当前服务器使用 `nohup + server.pid` 运行 Uvicorn，尚未接入 systemd。设备 MQTTS 首版部署和协议落地见 [MQTTS 设备云端通信落地方案](mqtts-rollout-plan.md)。
+> 适用范围：云汀系列产品共用 FastAPI 后端的部署、重启、验证和回滚。当前服务器同时承载云汀智家、云汀智车，并为后续产品族复用统一的用户、设备台账和绑定能力。服务器使用 `nohup + server.pid` 运行 Uvicorn，尚未接入 systemd。设备 MQTTS 首版部署和协议落地见 [MQTTS 设备云端通信落地方案](mqtts-rollout-plan.md)。
 
 ## 1. 当前部署信息
+
+最近一次生产部署记录见：[2026-08-03 Smart LED 安全重绑定云端部署记录](deployment-record-2026-08-03-smart-led-secure-rebind.md)。首次多产品族与智车 BLE 接入记录见：[2026-07-14 云汀智车 BLE 接入与统一账号部署记录](deployment-record-2026-07-14-smart-car-ble.md)。
 
 - 服务器：`39.97.237.214`
 - SSH 用户：`yunting`
@@ -34,7 +36,7 @@ python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 1. 不要覆盖远端 `.env`，里面有短信、微信和管理员密钥。
 2. 不要覆盖或删除远端 `data/`，里面有 SQLite 业务数据。
 3. 不要把真实 `YT_ADMIN_TOKEN`、短信 AccessKey、微信 AppSecret 写入仓库、文档、日志或聊天记录。
-4. 部署前必须先备份远端后端代码文件。
+4. 部署前必须先备份远端后端代码文件；修改 schema 或写入生产台账时，还必须使用 SQLite backup API 备份数据库。
 5. 新增 Python 依赖时必须执行 `python3 -m pip install --user -r requirements.txt`。
 6. 修改数据库 schema 后必须执行 `init_db()`；当前 schema 使用 `CREATE TABLE IF NOT EXISTS`，不会删除旧数据。
 7. 部署后必须验证公网 `GET /api` 和关键 `POST /api` 接口。
@@ -89,6 +91,18 @@ backup_dir="backup_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$backup_dir/app"
 cp requirements.txt README.md "$backup_dir/"
 cp app/*.py "$backup_dir/app/"
+python3 - "$backup_dir/yunting.db" <<'PYCODE'
+import sqlite3
+import sys
+from app.settings import get_settings
+
+source = sqlite3.connect(get_settings().database_path)
+target = sqlite3.connect(sys.argv[1])
+with target:
+    source.backup(target)
+target.close()
+source.close()
+PYCODE
 echo "BACKUP=$backup_dir"
 '
 ```
@@ -106,6 +120,7 @@ echo "BACKUP=$backup_dir"
 & "C:\Windows\System32\OpenSSH\scp.exe" -i "C:\Users\THINK\.ssh\yunting_dev_ed25519" `
   "d:\workspace\微信小程序\server\yt_smart_home_server\app\database.py" `
   "d:\workspace\微信小程序\server\yt_smart_home_server\app\services.py" `
+  "d:\workspace\微信小程序\server\yt_smart_home_server\app\test_device_catalog.py" `
   yunting@39.97.237.214:/home/yunting/yt_smart_home_server/app/
 ```
 
@@ -119,7 +134,7 @@ set -e
 cd /home/yunting/yt_smart_home_server
 
 python3 -m pip install --user -r requirements.txt
-python3 -m py_compile app/database.py app/services.py app/main.py
+python3 -m py_compile app/database.py app/services.py app/test_device_catalog.py app/main.py
 
 python3 - <<'PYCODE'
 from app.database import init_db
@@ -128,6 +143,7 @@ init_db()
 ensure_seed_data()
 print('db ok')
 print('has admin.users.search:', 'admin.users.search' in HANDLERS)
+print('has device.prepareBleBind:', 'device.prepareBleBind' in HANDLERS)
 PYCODE
 
 if [ -f server.pid ]; then
@@ -165,6 +181,7 @@ Uvicorn running on http://0.0.0.0:8000
 
 ```text
 has admin.users.search: True
+has device.prepareBleBind: True
 ```
 
 ## 5. 部署后验证
@@ -218,6 +235,18 @@ curl.exe -sS -X POST https://yutingsmarthome.xin/api `
 ```
 
 期望 `success=true`，且 `data.provisionSessionId` 有值。注意：该命令会在测试库里创建或更新该手机号用户，仅用于测试环境；测试设备号必须从台账中选择当前未绑定设备，不要手写校验码；方案 B 中服务端不再接收或校验设备 PIN。
+
+### 5.5 验证纯 BLE 绑定接口与 SL 台账
+
+不携带登录态调用 SL 接口，期望返回 `SESSION_MISSING`，而不是 `API_NOT_FOUND`：
+
+```powershell
+curl.exe -sS -X POST https://yutingsmarthome.xin/api `
+  -H "Content-Type: application/json" `
+  -d '{"type":"device.prepareBleBind","data":{"deviceNo":"YT-SL-10000-74A7"}}'
+```
+
+服务器数据库应保留 500 台原智家设备，并新增 40 台 SL、40 条出厂凭据和 40 条 SL 密钥。不得在运维输出中打印 PIN 或 `device_key_hex`。
 
 ## 6. MQTTS 运维验证
 

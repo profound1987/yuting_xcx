@@ -20,14 +20,16 @@ from .device_mqtt import device_mqtt_config
 from .responses import fail, ok
 from .settings import get_settings
 from .sms import SmsError, send_sms_code
+from .test_device_catalog import SMART_LED_SPECS, SMART_LED_TEST_DEVICES, smart_led_test_device_key_hex
 
 
 DEVICE_TYPES = [
-    {"label": "智能浇水设备", "value": "watering", "code": "AW"},
-    {"label": "环境传感器", "value": "sensor", "code": "ES"},
-    {"label": "智能灯控", "value": "light", "code": "LC"},
-    {"label": "智能插座", "value": "socket", "code": "SP"},
-    {"label": "智能网关", "value": "gateway", "code": "GW"},
+    {"label": "智能浇水设备", "value": "watering", "code": "AW", "productFamily": "smart_home", "onboardingMode": "ble_wifi"},
+    {"label": "环境传感器", "value": "sensor", "code": "ES", "productFamily": "smart_home", "onboardingMode": "ble_wifi"},
+    {"label": "智能灯控", "value": "light", "code": "LC", "productFamily": "smart_home", "onboardingMode": "ble_wifi"},
+    {"label": "智能插座", "value": "socket", "code": "SP", "productFamily": "smart_home", "onboardingMode": "ble_wifi"},
+    {"label": "智能网关", "value": "gateway", "code": "GW", "productFamily": "smart_home", "onboardingMode": "ble_wifi"},
+    {"label": "Smart LED", "value": "smart_led", "code": "SL", "productFamily": "smart_car", "onboardingMode": "ble_only"},
 ]
 
 DEVICE_NO_PATTERN = re.compile(r"^YT-([A-Z]{2})-([0-9A-F]{5})-([0-9A-F]{4})$")
@@ -43,6 +45,10 @@ SEED_DEFAULT_USER_IDS = (SEED_BOUND_ONLINE_USER_ID, SEED_BOUND_OFFLINE_USER_ID)
 SEED_ADMIN_QUERY_PHONES = (SEED_BOUND_ONLINE_PHONE, SEED_BOUND_OFFLINE_PHONE)
 SEED_SCENARIOS = ("sale-unbound-online", "sale-bound-online", "sale-bound-offline")
 PROVISION_SESSION_TTL_MS = 10 * 60 * 1000
+BLE_BIND_SESSION_TTL_MS = 5 * 60 * 1000
+BLE_REBIND_AUTH_VERSION = 1
+BLE_REBIND_AUTH_CONTEXT = "YTZC-BLE-REBIND-AUTH-V1"
+BLE_DEVICE_NONCE_BYTES = 16
 PROVISION_CLIENT_TIMEOUT_MS = 120 * 1000
 PROVISION_POLL_INTERVAL_MS = 2000
 PROVISION_BIND_WINDOW_MS = 2 * 60 * 1000
@@ -402,6 +408,116 @@ def ensure_all_device_keys(connection, current_time: int) -> None:
         ensure_device_key(connection, row["device_no"], current_time)
 
 
+def smart_led_capabilities(serial: str) -> dict[str, Any]:
+    spec = SMART_LED_SPECS.get(serial[:1])
+    if not spec:
+        raise ValueError(f"Unsupported Smart LED specification code: {serial[:1]}")
+    return normalize_capabilities_for_storage(
+        {
+            "schemaVersion": 1,
+            "deviceType": "smart_led",
+            "productFamily": "smart_car",
+            "spec": spec,
+            "components": {
+                "ledMatrix": {
+                    "present": True,
+                    "width": spec["width"],
+                    "height": spec["height"],
+                    "colorMode": spec["colorMode"],
+                    "pixelFormat": spec["pixelFormat"],
+                }
+            },
+            "features": {
+                "bleControl": {"supported": True},
+                "wifiProvision": {"supported": False},
+            },
+        }
+    )
+
+
+def ensure_smart_led_test_devices(connection, current_time: int) -> None:
+    """Idempotently import the 40 reserved Smart LED factory records.
+
+    The records share the production device registry used by Smart Home. Their
+    deterministic keys are strictly for the documented test range; real
+    production devices must receive random per-device keys during manufacturing.
+    """
+    type_info = get_device_type_by_code("SL")
+    if not type_info:
+        raise RuntimeError("Smart LED device type is not registered")
+
+    for item in SMART_LED_TEST_DEVICES:
+        parsed = parse_device_no(item["deviceNo"])
+        if not parsed or parsed["typeCode"] != "SL":
+            raise ValueError(f"Invalid Smart LED test device number: {item['deviceNo']}")
+        device_no = parsed["deviceNo"]
+        serial = parsed["serial"]
+        capabilities_json = json_dumps(smart_led_capabilities(serial))
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO device_registry(
+              device_no, type_code, serial, device_type, product_family, onboarding_mode,
+              type_label, name, status, bind_status, provision_state, online, owner_user_id,
+              mock_scenario, display_status, config_json, last_watering_at, last_synced_at,
+              heartbeat_interval_ms, last_seen_at, telemetry_json, capability_state,
+              capabilities_json, config_state, desired_config_json, desired_config_version,
+              applied_config_json, applied_config_version, created_at, updated_at
+            ) VALUES(
+              ?, 'SL', ?, 'smart_led', 'smart_car', 'ble_only', ?, ?, 'registered',
+              'unbound', 'provisioned', 0, NULL, 'smart-led-test', '离线', '{}', '--', NULL,
+              ?, NULL, '{}', 'reported', ?, 'unconfigured', NULL, 0, NULL, 0, ?, ?
+            )
+            """,
+            (
+                device_no,
+                serial,
+                type_info["label"],
+                type_info["label"],
+                heartbeat_interval_for_device_type("smart_led"),
+                capabilities_json,
+                current_time,
+                current_time,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE device_registry
+            SET type_code = 'SL', serial = ?, device_type = 'smart_led',
+                product_family = 'smart_car', onboarding_mode = 'ble_only',
+                type_label = ?, mock_scenario = 'smart-led-test',
+                capability_state = 'reported', capabilities_json = ?, updated_at = ?
+            WHERE device_no = ?
+            """,
+            (serial, type_info["label"], capabilities_json, current_time, device_no),
+        )
+        connection.execute(
+            """
+            INSERT INTO device_factory_credentials(
+              device_no, pin, production_batch, hw_revision, is_test, created_at, updated_at
+            ) VALUES(?, ?, 'SL-TEST-SEED-V1', 'TEST', 1, ?, ?)
+            ON CONFLICT(device_no) DO UPDATE SET
+              pin = excluded.pin,
+              production_batch = excluded.production_batch,
+              hw_revision = excluded.hw_revision,
+              is_test = excluded.is_test,
+              updated_at = excluded.updated_at
+            """,
+            (device_no, item["pin"], current_time, current_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO device_keys(device_no, key_id, device_key_hex, status, created_at, updated_at)
+            VALUES(?, 'sl-test-v1', ?, 'active', ?, ?)
+            ON CONFLICT(device_no) DO UPDATE SET
+              key_id = excluded.key_id,
+              device_key_hex = excluded.device_key_hex,
+              status = excluded.status,
+              updated_at = excluded.updated_at
+            """,
+            (device_no, smart_led_test_device_key_hex(device_no), current_time, current_time),
+        )
+
+
 def backfill_capabilities_from_provision_reports(connection, current_time: int) -> None:
     rows = connection.execute(
         """
@@ -505,10 +621,13 @@ def ensure_seed_data() -> None:
             normalize_seed_device_ownership(connection, current_time)
             ensure_seed_device_metadata(connection, current_time)
             ensure_seed_device_security(connection, current_time)
+            ensure_smart_led_test_devices(connection, current_time)
             ensure_all_device_keys(connection, current_time)
             return
 
         for type_info in DEVICE_TYPES:
+            if type_info["code"] == "SL":
+                continue
             for serial_number in range(0x00064):
                 serial = f"{serial_number:05X}"
                 scenario = get_seed_scenario(serial_number)
@@ -555,6 +674,8 @@ def ensure_seed_data() -> None:
                     ),
                 )
                 ensure_device_key(connection, device_no, current_time)
+        ensure_smart_led_test_devices(connection, current_time)
+        ensure_all_device_keys(connection, current_time)
 
 
 def public_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -1408,6 +1529,8 @@ def device_payload(device: dict[str, Any], owner_phone: str | None = None) -> di
         "deviceNo": device["device_no"],
         "deviceSerial": device["serial"],
         "deviceTypeCode": device["type_code"],
+        "productFamily": device.get("product_family") or "smart_home",
+        "onboardingMode": device.get("onboarding_mode") or "ble_wifi",
         "name": device["name"],
         "type": device["device_type"],
         "typeLabel": device["type_label"],
@@ -2004,6 +2127,364 @@ def device_secure_message(data: dict[str, Any]) -> dict[str, Any]:
         return fail("INVALID_COMMAND", "Unsupported device message type")
 
 
+def get_ble_bind_session(connection, bind_session_id: Any) -> dict[str, Any] | None:
+    session_id = str(bind_session_id or "").strip()
+    if not session_id:
+        return None
+    return row_to_dict(
+        connection.execute(
+            "SELECT * FROM device_ble_bind_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    )
+
+
+def normalize_ble_capability(capability: Any) -> dict[str, Any]:
+    if not isinstance(capability, dict):
+        return {}
+    spec = capability.get("spec")
+    return spec if isinstance(spec, dict) else capability
+
+
+def ble_capability_matches(device: dict[str, Any], capability: Any) -> bool:
+    actual = normalize_ble_capability(capability)
+    registered = json_loads(device.get("capabilities_json"), {})
+    expected = normalize_ble_capability(registered)
+    if device.get("device_type") == "smart_led":
+        expected_pixel_format = str(expected.get("pixelFormat") or "RGB565").upper()
+        actual_pixel_format = str(actual.get("pixelFormat") or expected_pixel_format).upper()
+        return (
+            str(actual.get("code") or "").upper() == str(expected.get("code") or "").upper()
+            and read_int(actual.get("width", actual.get("widthPx")), -1) == read_int(expected.get("width"), -2)
+            and read_int(actual.get("height", actual.get("heightPx")), -1) == read_int(expected.get("height"), -2)
+            and str(actual.get("colorMode") or "").upper() == str(expected.get("colorMode") or "").upper()
+            and actual_pixel_format == expected_pixel_format
+        )
+    return False
+
+
+def validate_ble_bind_session(
+    connection,
+    session: dict[str, Any] | None,
+    user: dict[str, Any],
+    current_time: int,
+) -> dict[str, Any] | None:
+    if not session or session.get("user_id") != user["id"]:
+        return fail("BIND_SESSION_NOT_FOUND", "绑定会话不存在")
+    if session.get("status") == "finished":
+        return None
+    if session.get("status") == "expired" or int(session.get("expires_at") or 0) <= current_time:
+        if session.get("status") not in {"finished", "expired"}:
+            connection.execute(
+                "UPDATE device_ble_bind_sessions SET status = 'expired', updated_at = ? WHERE id = ?",
+                (current_time, session["id"]),
+            )
+        return fail("BIND_SESSION_EXPIRED", "绑定会话已过期，请重新扫码添加")
+    return None
+
+
+def normalize_ble_device_nonce(value: Any) -> str:
+    nonce = str(value or "").strip()
+    if not nonce:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{22}", nonce):
+        return ""
+    try:
+        decoded = b64url_decode(nonce)
+    except Exception:
+        return ""
+    return nonce if len(decoded) == BLE_DEVICE_NONCE_BYTES else ""
+
+
+def create_ble_rebind_authorization(
+    device_key_hex: str,
+    device_no: str,
+    device_nonce: str,
+    bind_session_id: str,
+    challenge: str,
+    user_id: str,
+    bind_mode: str,
+    expires_at: int,
+) -> dict[str, Any]:
+    material = "|".join(
+        (
+            BLE_REBIND_AUTH_CONTEXT,
+            device_no,
+            device_nonce,
+            bind_session_id,
+            challenge,
+            user_id,
+            bind_mode,
+            str(expires_at),
+        )
+    )
+    signature = b64url_encode(
+        hmac.new(bytes.fromhex(device_key_hex), material.encode("utf-8"), hashlib.sha256).digest()
+    )
+    return {
+        "version": BLE_REBIND_AUTH_VERSION,
+        "mode": bind_mode,
+        "deviceNo": device_no,
+        "deviceNonce": device_nonce,
+        "bindSessionId": bind_session_id,
+        "challenge": challenge,
+        "userId": user_id,
+        "expiresAt": expires_at,
+        "signature": signature,
+    }
+
+
+def validate_ble_bind_ownership(session: dict[str, Any], device: dict[str, Any]) -> dict[str, Any] | None:
+    bind_mode = str(session.get("bind_mode") or "claim")
+    owner_user_id = device.get("owner_user_id")
+    if bind_mode == "recover":
+        if owner_user_id != session.get("user_id") or device.get("bind_status") != "bound":
+            return fail("DEVICE_OWNERSHIP_CHANGED", "设备云端所有权已变化，请重新发起绑定")
+        return None
+    if owner_user_id or device.get("bind_status") == "bound":
+        return fail("DEVICE_ALREADY_BOUND", "设备已被其他绑定会话占用")
+    return None
+
+
+def device_prepare_ble_bind(data: dict[str, Any]) -> dict[str, Any]:
+    parsed = parse_device_no(data.get("deviceNo"))
+    if not parsed:
+        return fail("DEVICE_NO_INVALID", "设备号格式或校验码不正确")
+    if not data.get("sessionToken"):
+        return fail("SESSION_MISSING", "请先登录后再绑定蓝牙设备")
+
+    with db() as connection:
+        user, response = resolve_user(connection, data, create_if_missing=True)
+        if not response["success"] or not user:
+            return response
+        device = get_device(connection, parsed["deviceNo"])
+        if not device:
+            return fail("DEVICE_NOT_REGISTERED", "设备未录入生产台账")
+        if device.get("status") != "registered":
+            return fail("DEVICE_DISABLED", "设备已停用，请联系售后")
+        if device.get("onboarding_mode") != "ble_only":
+            return fail("ONBOARDING_MODE_NOT_SUPPORTED", "该设备不使用纯蓝牙绑定流程")
+        owner_user_id = device.get("owner_user_id")
+        if owner_user_id and owner_user_id != user["id"]:
+            return fail("DEVICE_ALREADY_BOUND", "设备已被其他账号绑定")
+        if device.get("bind_status") == "bound" and not owner_user_id:
+            return fail("DEVICE_ALREADY_BOUND", "设备云端绑定状态异常，请联系售后")
+        bind_mode = "recover" if owner_user_id == user["id"] else "claim"
+        raw_device_nonce = str(data.get("deviceNonce") or "").strip()
+        device_nonce = normalize_ble_device_nonce(raw_device_nonce)
+        if raw_device_nonce and not device_nonce:
+            return fail("DEVICE_NONCE_INVALID", "设备连接随机数格式不正确，请重新连接蓝牙设备")
+        if bind_mode == "recover" and not device_nonce:
+            return fail("DEVICE_NONCE_REQUIRED", "设备固件不支持安全恢复绑定，请先升级设备固件")
+        device_key = row_to_dict(
+            connection.execute(
+                "SELECT * FROM device_keys WHERE device_no = ? AND status = 'active'",
+                (device["device_no"],),
+            ).fetchone()
+        )
+        if not device_key or not re.fullmatch(r"[0-9A-Fa-f]{32}", str(device_key.get("device_key_hex") or "")):
+            return fail("DEVICE_KEY_INVALID", "设备生产密钥未正确入账")
+
+        current_time = now_ms()
+        connection.execute(
+            """
+            UPDATE device_ble_bind_sessions
+            SET status = 'expired', updated_at = ?
+            WHERE status IN ('prepared', 'verified') AND expires_at <= ?
+            """,
+            (current_time, current_time),
+        )
+        bind_session_id = make_id("bs")
+        challenge = b64url_encode(secrets.token_bytes(24))
+        expires_at = current_time + BLE_BIND_SESSION_TTL_MS
+        authorization = create_ble_rebind_authorization(
+            str(device_key["device_key_hex"]),
+            device["device_no"],
+            device_nonce,
+            bind_session_id,
+            challenge,
+            user["id"],
+            bind_mode,
+            expires_at,
+        ) if device_nonce else None
+        connection.execute(
+            """
+            INSERT INTO device_ble_bind_sessions(
+              id, device_no, user_id, challenge, device_nonce, bind_mode,
+              authorization_version, authorization_signature, status, capability_json,
+              expires_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'prepared', '{}', ?, ?, ?)
+            """,
+            (
+                bind_session_id,
+                device["device_no"],
+                user["id"],
+                challenge,
+                device_nonce or None,
+                bind_mode,
+                BLE_REBIND_AUTH_VERSION if authorization else None,
+                authorization["signature"] if authorization else None,
+                expires_at,
+                current_time,
+                current_time,
+            ),
+        )
+        response_data = {
+            "bindSessionId": bind_session_id,
+            "challenge": challenge,
+            "expiresAt": expires_at,
+            "deviceNo": device["device_no"],
+            "productFamily": device.get("product_family") or "smart_home",
+            "onboardingMode": device.get("onboarding_mode") or "ble_wifi",
+            "bindMode": bind_mode,
+        }
+        if authorization:
+            response_data["rebindAuthorization"] = authorization
+        return ok(
+            response_data,
+            "设备可以通过蓝牙绑定",
+        )
+
+
+def device_verify_ble_proof(data: dict[str, Any]) -> dict[str, Any]:
+    if not data.get("sessionToken"):
+        return fail("SESSION_MISSING", "请先登录后再验证蓝牙设备")
+    with db() as connection:
+        user, response = resolve_user(connection, data)
+        if not response["success"] or not user:
+            return response
+        current_time = now_ms()
+        session = get_ble_bind_session(connection, data.get("bindSessionId"))
+        session_error = validate_ble_bind_session(connection, session, user, current_time)
+        if session_error or not session:
+            return session_error or fail("BIND_SESSION_NOT_FOUND", "绑定会话不存在")
+        if session["status"] not in {"prepared", "verified"}:
+            return fail("BIND_SESSION_STATE_INVALID", "绑定会话状态不正确")
+        device = get_device(connection, session["device_no"])
+        if not device or device.get("status") != "registered":
+            return fail("DEVICE_NOT_REGISTERED", "设备生产台账不完整")
+        ownership_error = validate_ble_bind_ownership(session, device)
+        if ownership_error:
+            return ownership_error
+        if not ble_capability_matches(device, data.get("capability")):
+            return fail("CAPABILITY_NOT_MATCH", "设备能力与设备号规格不一致")
+        device_key = row_to_dict(
+            connection.execute(
+                "SELECT * FROM device_keys WHERE device_no = ? AND status = 'active'",
+                (session["device_no"],),
+            ).fetchone()
+        )
+        key_hex = str(device_key.get("device_key_hex") if device_key else "")
+        if not re.fullmatch(r"[0-9A-Fa-f]{32}", key_hex):
+            return fail("DEVICE_KEY_INVALID", "设备生产密钥未正确入账")
+        proof_message = f"{session['device_no']}|{session['id']}|{session['challenge']}"
+        expected_proof = b64url_encode(
+            hmac.new(bytes.fromhex(key_hex), proof_message.encode("utf-8"), hashlib.sha256).digest()
+        )
+        supplied_proof = str(data.get("proof") or "")
+        if not hmac.compare_digest(supplied_proof, expected_proof):
+            return fail("DEVICE_PROOF_INVALID", "设备身份 proof 验证失败")
+
+        if session["status"] == "verified" and session.get("owner_key_id") and session.get("owner_key"):
+            return ok({"ownerKeyId": session["owner_key_id"], "ownerKey": session["owner_key"]})
+        owner_key_id = make_id("ok")
+        owner_key = b64url_encode(secrets.token_bytes(16))
+        capability_json = json_dumps(normalize_capabilities_for_storage(data["capability"]))
+        connection.execute(
+            """
+            UPDATE device_ble_bind_sessions
+            SET status = 'verified', capability_json = ?, owner_key_id = ?, owner_key = ?,
+                verified_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'prepared'
+            """,
+            (capability_json, owner_key_id, owner_key, current_time, current_time, session["id"]),
+        )
+        return ok({"ownerKeyId": owner_key_id, "ownerKey": owner_key}, "设备身份验证成功")
+
+
+def device_finish_ble_bind(data: dict[str, Any]) -> dict[str, Any]:
+    if not data.get("sessionToken"):
+        return fail("SESSION_MISSING", "请先登录后再完成蓝牙设备绑定")
+    with db() as connection:
+        user, response = resolve_user(connection, data)
+        if not response["success"] or not user:
+            return response
+        current_time = now_ms()
+        session = get_ble_bind_session(connection, data.get("bindSessionId"))
+        session_error = validate_ble_bind_session(connection, session, user, current_time)
+        if session_error or not session:
+            return session_error or fail("BIND_SESSION_NOT_FOUND", "绑定会话不存在")
+        if session["status"] == "finished":
+            return ok({"deviceNo": session["device_no"], "boundAt": session["finished_at"]})
+        if session["status"] != "verified" or not session.get("owner_key_id") or not session.get("owner_key"):
+            return fail("BIND_SESSION_STATE_INVALID", "设备 proof 尚未验证")
+        device = get_device(connection, session["device_no"])
+        if not device or device.get("status") != "registered":
+            return fail("DEVICE_NOT_REGISTERED", "设备未录入生产台账")
+        ownership_error = validate_ble_bind_ownership(session, device)
+        if ownership_error:
+            return ownership_error
+
+        device_name = str(data.get("deviceName") or "").strip() or device["type_label"]
+        if str(session.get("bind_mode") or "claim") == "recover":
+            updated = connection.execute(
+                """
+                UPDATE device_registry
+                SET bind_status = 'bound', owner_user_id = ?, name = ?, provision_state = 'provisioned',
+                    online = 0, display_status = '离线', last_seen_at = NULL, updated_at = ?
+                WHERE device_no = ? AND bind_status = 'bound' AND owner_user_id = ?
+                """,
+                (user["id"], device_name, current_time, device["device_no"], user["id"]),
+            )
+        else:
+            updated = connection.execute(
+                """
+                UPDATE device_registry
+                SET bind_status = 'bound', owner_user_id = ?, name = ?, provision_state = 'provisioned',
+                    online = 0, display_status = '离线', last_seen_at = NULL, updated_at = ?
+                WHERE device_no = ? AND bind_status = 'unbound' AND owner_user_id IS NULL
+                """,
+                (user["id"], device_name, current_time, device["device_no"]),
+            )
+        if updated.rowcount != 1:
+            return fail("DEVICE_ALREADY_BOUND", "设备已被其他绑定会话占用")
+        connection.execute(
+            """
+            INSERT INTO device_owner_keys(
+              device_no, owner_user_id, owner_key_id, owner_key, status, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, 'active', ?, ?)
+            ON CONFLICT(device_no) DO UPDATE SET
+              owner_user_id = excluded.owner_user_id,
+              owner_key_id = excluded.owner_key_id,
+              owner_key = excluded.owner_key,
+              status = excluded.status,
+              updated_at = excluded.updated_at
+            """,
+            (
+                device["device_no"],
+                user["id"],
+                session["owner_key_id"],
+                session["owner_key"],
+                current_time,
+                current_time,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE device_ble_bind_sessions
+            SET status = 'finished', finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'verified'
+            """,
+            (current_time, current_time, session["id"]),
+        )
+        event_type = "ble_recover" if str(session.get("bind_mode") or "claim") == "recover" else "ble_bind"
+        record_bind_event(connection, device["device_no"], user["id"], event_type, "success")
+        return ok(
+            {"deviceNo": device["device_no"], "boundAt": current_time, "bindMode": session.get("bind_mode") or "claim"},
+            "设备绑定成功",
+        )
+
+
 def device_prepare_configure(data: dict[str, Any]) -> dict[str, Any]:
     input_device_no = data.get("deviceNo") or ""
     normalized_device_no = normalize_device_no(input_device_no)
@@ -2379,6 +2860,10 @@ def device_unbind(data: dict[str, Any]) -> dict[str, Any]:
             WHERE device_no = ?
             """,
             (device["type_label"], "在线" if device["online"] else "离线", current_time, device_no),
+        )
+        connection.execute(
+            "UPDATE device_owner_keys SET status = 'revoked', updated_at = ? WHERE device_no = ?",
+            (current_time, device_no),
         )
         record_bind_event(connection, device_no, user["id"], "unbind", "success")
         return ok({"deviceNo": device_no, "unboundAt": current_time}, "已解绑")
@@ -3626,6 +4111,10 @@ def admin_device_force_unbind(data: dict[str, Any]) -> dict[str, Any]:
             """,
             (device["type_label"], "在线" if device["online"] else "离线", current_time, device_no),
         )
+        connection.execute(
+            "UPDATE device_owner_keys SET status = 'revoked', updated_at = ? WHERE device_no = ?",
+            (current_time, device_no),
+        )
         record_bind_event(connection, device_no, old_owner_user_id, "admin_unbind", "success", reason)
         record_admin_event(connection, data, "admin.device.forceUnbind", "device", device_no, "success", reason, {"oldOwnerUserId": old_owner_user_id})
         return ok({"deviceNo": device_no, "oldOwnerUserId": old_owner_user_id, "unboundAt": current_time})
@@ -3683,6 +4172,9 @@ HANDLERS = {
     "auth.logout": auth_logout,
     "auth.bindWechat": auth_bind_wechat,
     "user.getProfile": user_get_profile,
+    "device.prepareBleBind": device_prepare_ble_bind,
+    "device.verifyBleProof": device_verify_ble_proof,
+    "device.finishBleBind": device_finish_ble_bind,
     "device.prepareConfigure": device_prepare_configure,
     "device.checkProvisionStatus": device_check_provision_status,
     "device.addUnprovisioned": device_add_unprovisioned,

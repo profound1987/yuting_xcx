@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS device_registry (
   type_code TEXT NOT NULL,
   serial TEXT NOT NULL,
   device_type TEXT NOT NULL,
+  product_family TEXT NOT NULL DEFAULT 'smart_home',
+  onboarding_mode TEXT NOT NULL DEFAULT 'ble_wifi',
   type_label TEXT NOT NULL,
   name TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -166,6 +168,55 @@ CREATE TABLE IF NOT EXISTS device_keys (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY(device_no) REFERENCES device_registry(device_no)
+);
+
+CREATE TABLE IF NOT EXISTS device_factory_credentials (
+  device_no TEXT PRIMARY KEY,
+  pin TEXT NOT NULL,
+  production_batch TEXT NOT NULL,
+  hw_revision TEXT NOT NULL,
+  is_test INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(device_no) REFERENCES device_registry(device_no)
+);
+
+CREATE TABLE IF NOT EXISTS device_ble_bind_sessions (
+  id TEXT PRIMARY KEY,
+  device_no TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  challenge TEXT NOT NULL,
+  device_nonce TEXT,
+  bind_mode TEXT NOT NULL DEFAULT 'claim',
+  authorization_version INTEGER,
+  authorization_signature TEXT,
+  status TEXT NOT NULL,
+  capability_json TEXT NOT NULL DEFAULT '{}',
+  owner_key_id TEXT,
+  owner_key TEXT,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  verified_at INTEGER,
+  finished_at INTEGER,
+  FOREIGN KEY(device_no) REFERENCES device_registry(device_no),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ble_bind_sessions_device ON device_ble_bind_sessions(device_no, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ble_bind_sessions_user ON device_ble_bind_sessions(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ble_bind_sessions_expires ON device_ble_bind_sessions(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS device_owner_keys (
+  device_no TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  owner_key_id TEXT NOT NULL,
+  owner_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(device_no) REFERENCES device_registry(device_no),
+  FOREIGN KEY(owner_user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS device_provision_sessions (
@@ -289,6 +340,8 @@ def add_column_if_missing(connection: sqlite3.Connection, table: str, column: st
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
+    add_column_if_missing(connection, "device_registry", "product_family", "TEXT NOT NULL DEFAULT 'smart_home'")
+    add_column_if_missing(connection, "device_registry", "onboarding_mode", "TEXT NOT NULL DEFAULT 'ble_wifi'")
     add_column_if_missing(connection, "device_registry", "provision_state", "TEXT NOT NULL DEFAULT 'provisioned'")
     add_column_if_missing(connection, "device_registry", "heartbeat_interval_ms", "INTEGER NOT NULL DEFAULT 90000")
     add_column_if_missing(connection, "device_registry", "last_heartbeat_at", "INTEGER")
@@ -307,6 +360,10 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
     add_column_if_missing(connection, "device_registry", "applied_config_version", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(connection, "device_registry", "applied_config_hash", "TEXT")
     add_column_if_missing(connection, "device_registry", "pending_command_id", "TEXT")
+    add_column_if_missing(connection, "device_ble_bind_sessions", "device_nonce", "TEXT")
+    add_column_if_missing(connection, "device_ble_bind_sessions", "bind_mode", "TEXT NOT NULL DEFAULT 'claim'")
+    add_column_if_missing(connection, "device_ble_bind_sessions", "authorization_version", "INTEGER")
+    add_column_if_missing(connection, "device_ble_bind_sessions", "authorization_signature", "TEXT")
     add_column_if_missing(connection, "device_commands", "received_at", "INTEGER")
     add_column_if_missing(connection, "device_commands", "executing_at", "INTEGER")
     add_column_if_missing(connection, "device_commands", "expires_at", "INTEGER")

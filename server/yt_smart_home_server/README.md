@@ -1,6 +1,8 @@
-# 云汀智能家居服务端
+# 云汀设备平台服务端
 
-这是“云汀智家”小程序的 Python 服务端 MVP，实现统一 `/api` 入口，与小程序 `apiClient` 的 `{ type, data }` 调用格式一致。
+这是云汀系列产品共用的 Python 服务端，实现统一 `/api` 入口，与小程序 `apiClient` 的 `{ type, data }` 调用格式一致。当前同时支持“云汀智家”的 BLE 配网设备和“云汀智车”的纯 BLE Smart LED。
+
+设备使用统一的用户、设备台账、生产密钥、绑定关系和管理员能力。`device_registry.product_family` 区分 `smart_home`、`smart_car` 以及后续产品族，`onboarding_mode` 区分 `ble_wifi` 和 `ble_only`，不会为每条产品线复制一套服务器。
 
 ## 技术栈
 
@@ -109,6 +111,9 @@ MQTT 账号密码只允许放在服务器 `.env` 或 Broker 配置中，不能�
 - `auth.logout`
 - `auth.bindWechat`
 - `user.getProfile`
+- `device.prepareBleBind`
+- `device.verifyBleProof`
+- `device.finishBleBind`
 - `device.prepareConfigure`
 - `device.checkProvisionStatus`
 - `device.secureMessage`
@@ -133,6 +138,23 @@ MQTT 账号密码只允许放在服务器 `.env` 或 Broker 配置中，不能�
 - `admin.device.restore`
 - `admin.device.forceUnbind`
 - `admin.audit.search`
+
+## Smart LED 安全重绑（2026-08-02）
+
+`device.prepareBleBind`、`device.verifyBleProof`、`device.finishBleBind` 强制使用有效 `sessionToken`。新版 SL 固件在 `device.hello.ack` 中返回每次连接轮换的 16 字节 `deviceNonce`；服务器把设备号、随机数、绑定会话、challenge、目标用户、`claim/recover` 模式和过期时间组成规范原文，并使用生产台账中的 `deviceKey` 计算 `YTZC-BLE-REBIND-AUTH-V1` HMAC-SHA256 授权票据。
+
+- 云端未绑定：当前登录用户可获得 `claim`，设备即使残留旧 Owner 也可在 PIN 验证后安全替换。
+- 云端仍属于当前用户：可获得 `recover`，用于本机 Owner 凭据丢失后的换钥恢复。
+- 云端属于其他用户：拒绝签发授权，持有设备号和 PIN 也不能抢绑。
+- `device.unbind` 不依赖设备在线；小程序设备端清理失败后仍可完成云端解绑和本机删除。
+
+数据库迁移为 `device_ble_bind_sessions` 增加 `device_nonce`、`bind_mode`、`authorization_version` 和 `authorization_signature`，不修改智家 `AW/ES/LC/SP/GW` 的 BLE 配网 API。自动化回归命令：
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+部署顺序必须为：先升级服务器并完成 SQLite 备份/迁移，再发布新版智车小程序，最后烧录 Smart LED `0.8.0` 固件。这样旧未绑定固件可继续通过兼容流程绑定，而新固件不会在新版小程序到位前收到缺少云端授权的请求。
 
 ## 开发说明
 
@@ -167,7 +189,7 @@ YT_WECHAT_APP_ID=
 YT_WECHAT_APP_SECRET=
 ```
 
-设备台账会在首次启动时写入 `AW`、`ES`、`LC`、`SP`、`GW` 各 `00000` 到 `00063` 的测试设备，规则与小程序 Mock 保持一致。
+设备台账会保留 `AW`、`ES`、`LC`、`SP`、`GW` 各 `00000` 到 `00063` 的 500 台智家测试设备，并幂等写入 40 台保留的 `SL` 智车测试设备。SL 的 PIN 和测试密钥定义在 `app/test_device_catalog.py`；正式生产密钥必须按设备随机生成并安全导入。
 
 ## 管理员查询
 
@@ -204,7 +226,7 @@ curl -X POST http://127.0.0.1:8000/api \
 - `data.registrySummary`：完整 `device_registry` 台账统计，包含开发版预置测试设备；用于查看在售未绑定 `unbound` 设备数量。
 - `data.seedInventory`：开发版预置测试台账统计。
 
-开发版会预置 500 台测试设备和 2 个测试绑定用户，用于验证绑定、离线和已绑定场景。已绑定在线测试设备默认归属 `11111111111`，已绑定离线测试设备默认归属 `00000000000`。如果总览里看到完整台账是 500 台，这是测试台账，不等同于真实运营设备数。
+开发版包含 500 台智家测试设备、40 台智车 SL 测试设备和 2 个智家测试绑定用户，用于验证绑定、离线和已绑定场景。已绑定在线智家测试设备默认归属 `11111111111`，已绑定离线智家测试设备默认归属 `00000000000`。完整测试台账共 540 台，不等同于真实运营设备数。
 
 按手机号查询用户注册、登录、设备、绑定尝试和最近控制记录：
 
