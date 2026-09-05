@@ -4,7 +4,7 @@
 
 ## 1. 当前部署信息
 
-最近一次生产部署记录见：[2026-08-03 Smart LED 安全重绑定云端部署记录](deployment-record-2026-08-03-smart-led-secure-rebind.md)。首次多产品族与智车 BLE 接入记录见：[2026-07-14 云汀智车 BLE 接入与统一账号部署记录](deployment-record-2026-07-14-smart-car-ble.md)。
+最近一次生产部署记录见：[2026-09-03 Smart LED 绑定随机数防呆部署记录](deployment-record-2026-09-03-smart-led-device-nonce-guard.md)。安全重绑定首次部署见：[2026-08-03 Smart LED 安全重绑定云端部署记录](deployment-record-2026-08-03-smart-led-secure-rebind.md)。首次多产品族与智车 BLE 接入记录见：[2026-07-14 云汀智车 BLE 接入与统一账号部署记录](deployment-record-2026-07-14-smart-car-ble.md)。
 
 - 服务器：`39.97.237.214`
 - SSH 用户：`yunting`

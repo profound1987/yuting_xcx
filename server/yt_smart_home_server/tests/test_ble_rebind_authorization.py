@@ -50,6 +50,8 @@ class BleRebindAuthorizationTest(unittest.TestCase):
         with db() as connection:
             user_one = ensure_user(connection, USER_ONE_PHONE)
             user_two = ensure_user(connection, USER_TWO_PHONE)
+            cls.user_one_id = user_one["id"]
+            cls.user_two_id = user_two["id"]
             cls.user_one_token = create_session(connection, user_one["id"])["sessionToken"]
             cls.user_two_token = create_session(connection, user_two["id"])["sessionToken"]
 
@@ -103,6 +105,12 @@ class BleRebindAuthorizationTest(unittest.TestCase):
         self.assertFalse(unauthenticated["success"])
         self.assertEqual(unauthenticated["code"], "SESSION_MISSING")
 
+        legacy_client = device_prepare_ble_bind(
+            {"sessionToken": self.user_one_token, "deviceNo": DEVICE_NO}
+        )
+        self.assertFalse(legacy_client["success"])
+        self.assertEqual(legacy_client["code"], "DEVICE_NONCE_REQUIRED")
+
         first_response = device_prepare_ble_bind(
             {"sessionToken": self.user_one_token, "deviceNo": DEVICE_NO, "deviceNonce": first_nonce}
         )
@@ -142,14 +150,17 @@ class BleRebindAuthorizationTest(unittest.TestCase):
         replacement = replacement_response["data"]
         self.assertEqual(replacement["bindMode"], "claim")
         self.assert_authorization(replacement, replacement_nonce, "claim")
+        replacement_owner, replacement_finished = self.verify_and_finish(self.user_two_token, replacement)
+        self.assertEqual(replacement_finished["bindMode"], "claim")
+        self.assertNotEqual(recovered_owner["ownerKey"], replacement_owner["ownerKey"])
 
         with db() as connection:
             row = connection.execute(
                 "SELECT bind_status, owner_user_id FROM device_registry WHERE device_no = ?",
                 (DEVICE_NO,),
             ).fetchone()
-            self.assertEqual(row["bind_status"], "unbound")
-            self.assertIsNone(row["owner_user_id"])
+            self.assertEqual(row["bind_status"], "bound")
+            self.assertEqual(row["owner_user_id"], self.user_two_id)
 
 
 if __name__ == "__main__":

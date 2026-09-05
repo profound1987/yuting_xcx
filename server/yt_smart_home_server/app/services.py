@@ -2274,8 +2274,11 @@ def device_prepare_ble_bind(data: dict[str, Any]) -> dict[str, Any]:
         device_nonce = normalize_ble_device_nonce(raw_device_nonce)
         if raw_device_nonce and not device_nonce:
             return fail("DEVICE_NONCE_INVALID", "设备连接随机数格式不正确，请重新连接蓝牙设备")
-        if bind_mode == "recover" and not device_nonce:
-            return fail("DEVICE_NONCE_REQUIRED", "设备固件不支持安全恢复绑定，请先升级设备固件")
+        if not device_nonce:
+            return fail(
+                "DEVICE_NONCE_REQUIRED",
+                "当前小程序版本过旧，无法生成安全绑定授权，请更新小程序后重新连接设备",
+            )
         device_key = row_to_dict(
             connection.execute(
                 "SELECT * FROM device_keys WHERE device_no = ? AND status = 'active'",
@@ -2306,7 +2309,7 @@ def device_prepare_ble_bind(data: dict[str, Any]) -> dict[str, Any]:
             user["id"],
             bind_mode,
             expires_at,
-        ) if device_nonce else None
+        )
         connection.execute(
             """
             INSERT INTO device_ble_bind_sessions(
